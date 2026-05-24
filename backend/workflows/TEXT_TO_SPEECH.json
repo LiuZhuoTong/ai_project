@@ -1,0 +1,80 @@
+{
+  "prompt": {
+    "1": {
+      "inputs": {
+        "text": "write describe text here"
+      },
+      "class_type": "CR Text",
+      "_meta": {
+        "title": "合成文本"
+      }
+    },
+    "2": {
+      "inputs": {
+        "text": "愤怒"
+      },
+      "class_type": "CR Text",
+      "_meta": {
+        "title": "风格指导"
+      }
+    },
+    "3": {
+      "inputs": {
+        "filename_prefix": "audio/ComfyUI",
+        "audioUI": "",
+        "audio": [
+          "6",
+          0
+        ]
+      },
+      "class_type": "SaveAudio",
+      "_meta": {
+        "title": "保存音频"
+      }
+    },
+    "5": {
+      "inputs": {
+        "audioUI": "",
+        "audio": [
+          "6",
+          0
+        ]
+      },
+      "class_type": "PreviewAudio",
+      "_meta": {
+        "title": "预览音频"
+      }
+    },
+    "6": {
+      "inputs": {
+        "text": [
+          "1",
+          0
+        ],
+        "speaker": "Vivian",
+        "model_choice": "1.7B",
+        "device": "auto",
+        "precision": "bf16",
+        "language": "Auto",
+        "seed": 135068397719237,
+        "instruct": [
+          "2",
+          0
+        ],
+        "max_new_tokens": 2048,
+        "top_p": 0.8,
+        "top_k": 20,
+        "temperature": 1,
+        "repetition_penalty": 1.05,
+        "attention": "auto",
+        "unload_model_after_generate": false,
+        "custom_model_path": "/root/ComfyUI/models/qwen-tts/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "custom_speaker_name": "Vivian"
+      },
+      "class_type": "FB_Qwen3TTSCustomVoice",
+      "_meta": {
+        "title": "🎵 Qwen3-TTS CustomVoice"
+      }
+    }
+  }
+}

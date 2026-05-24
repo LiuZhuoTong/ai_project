@@ -1,0 +1,172 @@
+{
+  "prompt":{
+    "1": {
+      "inputs": {
+        "video_info": [
+          "10",
+          3
+        ]
+      },
+      "class_type": "VHS_VideoInfo",
+      "_meta": {
+        "title": "Video Info 🎥🅥🅗🅢"
+      }
+    },
+    "3": {
+      "inputs": {
+        "anything": [
+          "6",
+          0
+        ]
+      },
+      "class_type": "easy cleanGpuUsed",
+      "_meta": {
+        "title": "清理显存占用"
+      }
+    },
+    "4": {
+      "inputs": {
+        "anything": [
+          "5",
+          0
+        ]
+      },
+      "class_type": "easy cleanGpuUsed",
+      "_meta": {
+        "title": "清理显存占用"
+      }
+    },
+    "5": {
+      "inputs": {
+        "width": [
+          "6",
+          1
+        ],
+        "height": [
+          "6",
+          2
+        ],
+        "mask_dilates": 5,
+        "flow_mask_dilates": 8,
+        "ref_stride": 6,
+        "neighbor_length": 12,
+        "subvideo_length": 50,
+        "raft_iter": 20,
+        "fp16": "enable",
+        "image": [
+          "6",
+          0
+        ],
+        "mask": [
+          "11",
+          3
+        ]
+      },
+      "class_type": "ProPainterInpaint",
+      "_meta": {
+        "title": "Pro重绘"
+      }
+    },
+    "6": {
+      "inputs": {
+        "width": 1248,
+        "height": 704,
+        "interpolation": "lanczos",
+        "method": "fill / crop",
+        "condition": "always",
+        "multiple_of": 2,
+        "image": [
+          "10",
+          0
+        ]
+      },
+      "class_type": "ImageResize+",
+      "_meta": {
+        "title": "🔧 Image Resize"
+      }
+    },
+    "7": {
+      "inputs": {
+        "image": "pasted/image.png"
+      },
+      "class_type": "LoadImage",
+      "_meta": {
+        "title": "加载图像"
+      }
+    },
+    "9": {
+      "inputs": {
+        "frame_rate": [
+          "1",
+          0
+        ],
+        "loop_count": 0,
+        "filename_prefix": "AnimateDiff",
+        "format": "video/h265-mp4",
+        "pix_fmt": "yuv420p10le",
+        "crf": 22,
+        "save_metadata": true,
+        "pingpong": false,
+        "save_output": true,
+        "images": [
+          "5",
+          0
+        ],
+        "audio": [
+          "10",
+          2
+        ]
+      },
+      "class_type": "VHS_VideoCombine",
+      "_meta": {
+        "title": "Video Combine 🎥🅥🅗🅢"
+      }
+    },
+    "10": {
+      "inputs": {
+        "video": "upload file here",
+        "force_rate": 25,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "None"
+      },
+      "class_type": "VHS_LoadVideo",
+      "_meta": {
+        "title": "Load Video (Upload) 🎥🅥🅗🅢"
+      }
+    },
+    "11": {
+      "inputs": {
+        "width": [
+          "6",
+          1
+        ],
+        "height": [
+          "6",
+          2
+        ],
+        "upscale_method": "nearest-exact",
+        "keep_proportion": "stretch",
+        "pad_color": "0, 0, 0",
+        "crop_position": "center",
+        "divisible_by": 2,
+        "device": "cpu",
+        "image": [
+          "7",
+          0
+        ],
+        "mask": [
+          "7",
+          1
+        ]
+      },
+      "class_type": "ImageResizeKJv2",
+      "_meta": {
+        "title": "Resize Image v2"
+      }
+    }
+  }
+}

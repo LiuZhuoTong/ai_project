@@ -1,0 +1,15 @@
+D:\webUI\backend\src\main\java\com\example\aiworkshop\config\WebConfig.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\entity\Task.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\dto\request\TaskSubmitRequest.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\repository\UserRepository.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\controller\AuthController.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\entity\User.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\repository\TaskRepository.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\service\TaskService.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\dto\response\TaskResponse.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\config\SecurityConfig.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\AiWorkshopApplication.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\controller\TaskController.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\config\GlobalExceptionHandler.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\entity\TaskType.java
+D:\webUI\backend\src\main\java\com\example\aiworkshop\service\UserAuthService.java
