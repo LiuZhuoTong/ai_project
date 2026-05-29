@@ -40,6 +40,7 @@ public class TaskService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HttpClient httpClient = HttpClients.createDefault();
 
+    // 上传路径
     @Value("${file.upload-dir:/root/comfyui/storage-user/input}")
     private String uploadDir;
 
