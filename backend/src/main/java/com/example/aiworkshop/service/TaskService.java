@@ -395,14 +395,14 @@ public class TaskService {
                 }
                 break;
 
-            case TEXT_TO_VIDEO_WITH_AUDIO:
+            case TEXT_TO_VIDEO_AUDIO:
                 if (description != null) {
                     result = result.replace("write describe text here", description);
                     log.debug("已替换描述文字");
                 }
                 break;
 
-            case IMAGE_TO_VIDEO_WITH_AUDIO:
+            case IMAGE_TO_VIDEO_AUDIO:
                 if (fileName != null) {
                     result = result.replace("upload file here", fileName);
                     log.debug("已替换文件名");
@@ -420,7 +420,7 @@ public class TaskService {
                 }
                 break;
 
-            case FACE_consistency_TRANSFER:
+            case FACE_CONSISTENCY:
                 if (fileName != null) {
                     result = result.replace("upload file here", fileName);
                     log.debug("已替换文件名");

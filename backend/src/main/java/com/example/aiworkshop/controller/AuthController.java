@@ -56,6 +56,13 @@ public class AuthController {
                 return ResponseEntity.badRequest().body(result);
             }
             
+            // 只允许特定用户注册
+            if (!"liuzhuotong_zh".equals(username)) {
+                result.put("success", false);
+                result.put("message", "只允许特定用户注册");
+                return ResponseEntity.badRequest().body(result);
+            }
+            
             if (password == null || password.length() < 6) {
                 result.put("success", false);
                 result.put("message", "密码长度不能少于6位");
