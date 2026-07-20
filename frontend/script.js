@@ -35,7 +35,7 @@ const tools = {
     'video-remove-subtitle': { name: '视频去字幕', needText: false, needImage: false, needVideo: true },
     'face-consistency': { name: '人物一致性迁移', needText: true, needImage: true, needVideo: false },
     'text-to-speech': { name: '文字生成语音', needText: true, needImage: false, needVideo: false },
-    'drama-generation': { name: '短剧生成', needText: false, needDoc: true, needImage: false, needVideo: false, isAdvanced: true }
+    'science-video': { name: '科普视频生成', needText: true, needDoc: false, needImage: false, needVideo: false, isAdvanced: true }
 };
 
 /** 后端API基础地址 */
@@ -67,6 +67,28 @@ let loginTime = null;
 
 /** 自动登出检查定时器ID */
 let autoLogoutTimer = null;
+
+/** ===== 分页相关状态 ===== */
+/** 所有任务数据（原始） */
+let allTasks = [];
+/** 筛选后的任务数据 */
+let filteredTasks = [];
+/** 当前页码（从0开始，与后端一致） */
+let currentPage = 0;
+/** 每页显示数量 */
+let pageSize = 10;
+/** 当前筛选状态 */
+let currentStatusFilter = 'all';
+/** 当前排序方式 */
+let currentSort = 'newest';
+/** 当前搜索关键词 */
+let currentSearch = '';
+/** 总元素数量（来自后端） */
+let totalElements = 0;
+/** 总页数（来自后端） */
+let totalPages = 0;
+/** 是否使用后端分页 */
+let useBackendPagination = true;
 
 /**
  * 页面初始化
@@ -292,19 +314,15 @@ async function checkUsernameExists() {
 /**
  * 用户登录
  * 
- * <p>收集用户名和密码，调用后端登录API。</p>
+ * <p>收集用户名和密码，调用后端登录API。如果后端不可用，使用模拟登录。</p>
  */
 async function doLogin() {
     const username = document.getElementById('loginUsername').value.trim();
     const password = document.getElementById('loginPassword').value;
 
-    // 验证输入
+    // 验证输入 - 仅检查用户名，密码可以为空（模拟登录）
     if (!username) {
         showNotification('提示', '请输入用户名', 'warning');
-        return;
-    }
-    if (!password) {
-        showNotification('提示', '请输入密码', 'warning');
         return;
     }
 
@@ -325,9 +343,29 @@ async function doLogin() {
             showNotification('登录失败', data.message || '登录失败', 'error');
         }
     } catch (error) {
-        console.error('登录失败:', error);
-        showNotification('登录失败', '网络错误，请稍后重试', 'error');
+        // 后端不可用，使用模拟登录
+        console.log('后端服务不可用，使用模拟登录');
+        showNotification('提示', '后端服务不可用，使用模拟登录', 'info');
+        performMockLogin(username);
     }
+}
+
+/**
+ * 模拟登录
+ * 
+ * <p>当后端服务不可用时，使用模拟数据进行登录。</p>
+ * 
+ * @param {string} username 用户名
+ */
+function performMockLogin(username) {
+    // 生成模拟用户ID
+    const mockUserId = 'mock_' + username.toLowerCase() + '_' + Date.now().toString(36);
+    
+    // 使用handleLoginSuccess完成登录流程
+    handleLoginSuccess(mockUserId, username, username);
+    
+    // 加载模拟任务数据
+    loadMockTasks();
 }
 
 /**
@@ -661,6 +699,17 @@ function openModal(toolId) {
     // 显示/隐藏上传区域
     uploadSection.style.display = (toolInfo.needImage || toolInfo.needVideo || toolInfo.needDoc) ? 'block' : 'none';
     
+    // 显示/隐藏播音员和情绪选择（仅文字生成语音任务）
+    const speakerSection = document.getElementById('speakerSection');
+    const emotionSection = document.getElementById('emotionSection');
+    if (toolId === 'text-to-speech') {
+        speakerSection.style.display = 'block';
+        emotionSection.style.display = 'block';
+    } else {
+        speakerSection.style.display = 'none';
+        emotionSection.style.display = 'none';
+    }
+    
     // 设置占位文字
     if (toolId === 'text-to-speech') {
         inputText.placeholder = '请输入待转为语音的文字';
@@ -833,27 +882,51 @@ async function submitTaskToBackend() {
         return;
     }
     
-    // 构建FormData
-    const formData = new FormData();
-    formData.append('userId', currentUserId);
-    formData.append('type', currentTool);
-    if (description) {
-        formData.append('description', description);
-    }
-    uploadedFiles.forEach((file, index) => {
-        formData.append(`file`, file);
-    });
-    
     // 显示加载动画
     showProgress();
     
     try {
-        const response = await fetch(`${API_BASE_URL}/tasks/submit`, {
-            method: 'POST',
-            body: formData
-        });
+        let response;
+        let data;
         
-        const data = await response.json();
+        if (currentTool === 'science-video') {
+            const formData = new FormData();
+            formData.append('userId', currentUserId);
+            formData.append('narration', description);
+            
+            response = await fetch(`${API_BASE_URL}/tasks/submit/science-video`, {
+                method: 'POST',
+                body: formData
+            });
+            data = await response.json();
+        } else {
+            // 构建FormData
+            const formData = new FormData();
+            formData.append('userId', currentUserId);
+            formData.append('type', currentTool);
+            formData.append('isPolish', 'true');
+            if (description) {
+                formData.append('description', description);
+            }
+            
+            // 如果是文字生成语音任务，添加播音员和情绪参数
+            if (currentTool === 'text-to-speech') {
+                const speakerSelect = document.getElementById('speakerSelect');
+                const emotionSelect = document.getElementById('emotionSelect');
+                formData.append('speaker', speakerSelect.value);
+                formData.append('emotion', emotionSelect.value);
+            }
+            
+            uploadedFiles.forEach((file, index) => {
+                formData.append(`file`, file);
+            });
+            
+            response = await fetch(`${API_BASE_URL}/tasks/submit`, {
+                method: 'POST',
+                body: formData
+            });
+            data = await response.json();
+        }
         
         if (data.success) {
             showNotification('任务已提交', `任务ID: ${data.taskId}`, 'success');
@@ -869,6 +942,20 @@ async function submitTaskToBackend() {
         showNotification('提交失败', '网络错误', 'error');
     } finally {
         hideProgress();
+    }
+}
+
+function toggleChildTasks(parentTaskId) {
+    const container = document.getElementById(`child-tasks-${parentTaskId}`);
+    const expandIcon = document.querySelector(`.parent-task[onclick="toggleChildTasks('${parentTaskId}')"] .expand-icon`);
+    
+    if (container) {
+        const isHidden = container.style.display === 'none';
+        container.style.display = isHidden ? 'block' : 'none';
+        
+        if (expandIcon) {
+            expandIcon.innerHTML = isHidden ? '▼' : '▶';
+        }
     }
 }
 
@@ -907,20 +994,49 @@ function simulateTaskProgress(taskId) {
 }
 
 /**
- * 加载历史任务
- * 
- * <p>从后端获取当前用户的任务列表。</p>
+ * 加载历史任务（使用后端分页）
+ *
+ * <p>从后端分页获取当前用户的任务列表。</p>
  */
 async function loadHistoryTasks() {
     if (!isLoggedIn || !currentUserId) return;
-    
+
     try {
-        const response = await fetch(`${API_BASE_URL}/tasks/user/${currentUserId}`);
-        const tasks = await response.json();
-        renderHistoryTasks(tasks);
+        // 构建查询参数
+        const params = new URLSearchParams({
+            page: currentPage,
+            size: pageSize,
+            status: currentStatusFilter,
+            sort: currentSort
+        });
+        if (currentSearch.trim()) {
+            params.append('keyword', currentSearch.trim());
+        }
+
+        const response = await fetch(`${API_BASE_URL}/tasks/user/${currentUserId}/paged?${params}`);
+        const data = await response.json();
+
+        // 更新分页信息
+        allTasks = data.content || [];
+        filteredTasks = allTasks;
+        totalElements = data.totalElements || 0;
+        totalPages = data.totalPages || 0;
+
+        // 更新统计信息（来自后端）
+        if (data.statistics) {
+            document.getElementById('statTotal').textContent = data.statistics.total || 0;
+            document.getElementById('statSuccess').textContent = data.statistics.success || 0;
+            document.getElementById('statProcessing').textContent = data.statistics.processing || 0;
+            document.getElementById('statPending').textContent = data.statistics.pending || 0;
+        }
+
+        renderHistoryTasksFromBackend();
+        renderPaginationFromBackend();
+
     } catch (error) {
         console.error('加载任务失败:', error);
-        // 加载模拟数据
+        // 加载模拟数据（前端分页）
+        useBackendPagination = false;
         loadMockTasks();
     }
 }
@@ -930,7 +1046,7 @@ async function loadHistoryTasks() {
  */
 function loadMockTasks() {
     const now = new Date();
-    const mockTasks = [
+    allTasks = [
         {
             taskId: 'mock001',
             userId: currentUserId,
@@ -981,7 +1097,16 @@ function loadMockTasks() {
             submitTime: new Date(now.getTime() - 6 * 60 * 60 * 1000).toISOString(),
             downloadPath: '/download/mock005.mp3'
         },
-        
+        {
+            taskId: 'mock006',
+            userId: currentUserId,
+            type: 'drama-generation',
+            description: '生成一个有趣的短剧',
+            status: '执行失败',
+            progress: 0,
+            submitTime: new Date(now.getTime() - 8 * 60 * 60 * 1000).toISOString(),
+            downloadPath: null
+        },
         {
             taskId: 'mock007',
             userId: currentUserId,
@@ -1011,80 +1136,714 @@ function loadMockTasks() {
             progress: 0,
             submitTime: new Date(now.getTime() - 5 * 60 * 1000).toISOString(),
             downloadPath: null
+        },
+        {
+            taskId: 'mock010',
+            userId: currentUserId,
+            type: 'text-to-image',
+            description: '一只可爱的小狗在公园里奔跑',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString(),
+            downloadPath: '/download/mock010.jpg'
+        },
+        {
+            taskId: 'science-main-001',
+            userId: currentUserId,
+            type: 'science-video',
+            description: '太阳系行星科普：探索八大行星的奥秘',
+            fatherTaskId: null,
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-main-001.mp4'
+        },
+        {
+            taskId: 'science-child-001',
+            userId: currentUserId,
+            type: 'text-to-image',
+            description: '场景1：太阳系全景图，展示太阳和八大行星',
+            fatherTaskId: 'science-main-001',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 58 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-child-001.jpg'
+        },
+        {
+            taskId: 'science-child-002',
+            userId: currentUserId,
+            type: 'text-to-image',
+            description: '场景2：水星表面特写，展示陨石坑地貌',
+            fatherTaskId: 'science-main-001',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 55 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-child-002.jpg'
+        },
+        {
+            taskId: 'science-child-003',
+            userId: currentUserId,
+            type: 'text-to-video-audio',
+            description: '镜头1：太阳系全景动画视频',
+            fatherTaskId: 'science-main-001',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 50 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-child-003.mp4'
+        },
+        {
+            taskId: 'science-child-004',
+            userId: currentUserId,
+            type: 'text-to-video-audio',
+            description: '镜头2：水星探索动画视频',
+            fatherTaskId: 'science-main-001',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 45 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-child-004.mp4'
+        },
+        {
+            taskId: 'science-child-005',
+            userId: currentUserId,
+            type: 'text-to-speech',
+            description: '解说音频：太阳系介绍',
+            fatherTaskId: 'science-main-001',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 40 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-child-005.mp3'
+        },
+        {
+            taskId: 'science-main-002',
+            userId: currentUserId,
+            type: 'science-video',
+            description: '人工智能发展史：从图灵测试到深度学习',
+            fatherTaskId: null,
+            status: '执行中',
+            progress: 60,
+            submitTime: new Date(now.getTime() - 30 * 60 * 1000).toISOString(),
+            downloadPath: null
+        },
+        {
+            taskId: 'science-child-006',
+            userId: currentUserId,
+            type: 'text-to-image',
+            description: '场景1：早期计算机ENIAC',
+            fatherTaskId: 'science-main-002',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 28 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-child-006.jpg'
+        },
+        {
+            taskId: 'science-child-007',
+            userId: currentUserId,
+            type: 'text-to-image',
+            description: '场景2：现代数据中心服务器集群',
+            fatherTaskId: 'science-main-002',
+            status: '执行成功',
+            progress: 100,
+            submitTime: new Date(now.getTime() - 25 * 60 * 1000).toISOString(),
+            downloadPath: '/download/science-child-007.jpg'
+        },
+        {
+            taskId: 'science-child-008',
+            userId: currentUserId,
+            type: 'text-to-video-audio',
+            description: '镜头1：人工智能发展历程动画',
+            fatherTaskId: 'science-main-002',
+            status: '执行中',
+            progress: 75,
+            submitTime: new Date(now.getTime() - 20 * 60 * 1000).toISOString(),
+            downloadPath: null
+        },
+        {
+            taskId: 'science-child-009',
+            userId: currentUserId,
+            type: 'text-to-video-audio',
+            description: '镜头2：神经网络结构可视化',
+            fatherTaskId: 'science-main-002',
+            status: '排队中',
+            progress: 0,
+            submitTime: new Date(now.getTime() - 15 * 60 * 1000).toISOString(),
+            downloadPath: null
         }
     ];
+
+    // 更新统计信息
+    updateMockStatistics();
     
-    renderHistoryTasks(mockTasks);
+    // 设置分页信息（前端分页模式）
+    useBackendPagination = false;
+    filteredTasks = [...allTasks];
+    totalElements = allTasks.length;
+    totalPages = Math.ceil(totalElements / pageSize);
+    currentPage = 0;
+    
+    // 渲染任务列表（使用前端分页）
+    renderHistoryTasksWithFrontendPagination();
 }
 
 /**
- * 渲染历史任务列表
- * 
- * @param {Array} tasks 任务数组
+ * 更新模拟统计信息
  */
-function renderHistoryTasks(tasks) {
+function updateMockStatistics() {
+    const stats = {
+        total: allTasks.length,
+        success: allTasks.filter(t => t.status === '执行成功').length,
+        processing: allTasks.filter(t => t.status === '执行中').length,
+        pending: allTasks.filter(t => t.status === '排队中').length
+    };
+
+    document.getElementById('statTotal').textContent = stats.total;
+    document.getElementById('statSuccess').textContent = stats.success;
+    document.getElementById('statProcessing').textContent = stats.processing;
+    document.getElementById('statPending').textContent = stats.pending;
+}
+
+/**
+ * 渲染任务列表（前端分页模式）
+ */
+function renderHistoryTasksWithFrontendPagination() {
     const container = document.getElementById('historyContainer');
-    
-    if (!tasks || tasks.length === 0) {
+    const statsBar = document.getElementById('historyStats');
+    const filterBar = document.getElementById('historyFilterBar');
+    const pagination = document.getElementById('paginationContainer');
+
+    statsBar.style.display = 'grid';
+    filterBar.style.display = 'flex';
+
+    if (!filteredTasks || filteredTasks.length === 0) {
         container.innerHTML = `
             <div class="empty-state">
                 <svg viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.5" width="64" height="64">
                     <path d="M12 20v-6m0 0l-3 3m3-3l3 3"/>
                     <path d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
                 </svg>
-                <p>暂无任务记录</p>
+                <p>暂无匹配的任务</p>
+                <p class="empty-hint">试试调整筛选条件或搜索关键词</p>
             </div>
         `;
+        pagination.style.display = 'none';
         return;
     }
-    
+
+    const startIndex = currentPage * pageSize;
+    const endIndex = Math.min(startIndex + pageSize, filteredTasks.length);
+    const pageTasks = filteredTasks.slice(startIndex, endIndex);
+
     const now = new Date();
-    container.innerHTML = tasks.map(task => {
+
+    const parentTasks = pageTasks.filter(t => !t.fatherTaskId);
+    const childTasks = pageTasks.filter(t => t.fatherTaskId);
+
+    let html = '<div class="task-list">';
+    
+    parentTasks.forEach(parentTask => {
+        const submitTime = new Date(parentTask.submitTime);
+        const hoursAgo = Math.floor((now - submitTime) / (1000 * 60 * 60));
+        const expiresIn = Math.max(0, 24 - hoursAgo);
+
+        let statusIcon = '';
+        let statusClass = '';
+        let statusBadgeClass = '';
+        let statusText = '';
+
+        if (parentTask.status === '执行成功') {
+            statusIcon = '&#10003;';
+            statusClass = 'success';
+            statusBadgeClass = 'success';
+            statusText = '已完成';
+        } else if (parentTask.status === '执行中') {
+            statusIcon = '&#9679;';
+            statusClass = 'processing';
+            statusBadgeClass = 'processing';
+            statusText = '进行中';
+        } else if (parentTask.status === '排队中') {
+            statusIcon = '&#9675;';
+            statusClass = 'pending';
+            statusBadgeClass = 'pending';
+            statusText = '排队中';
+        } else {
+            statusIcon = '&#10007;';
+            statusClass = 'failed';
+            statusBadgeClass = 'failed';
+            statusText = '失败';
+        }
+
+        const toolName = tools[parentTask.type]?.name || parentTask.type;
+        const isUrgent = expiresIn < 10 && expiresIn > 0 && parentTask.status === '执行成功';
+        const hasChildren = childTasks.some(c => c.fatherTaskId === parentTask.taskId);
+
+        html += `
+            <div class="task-card status-${statusClass} parent-task" onclick="toggleChildTasks('${parentTask.taskId}')">
+                <div class="task-status-icon ${statusClass}">${statusIcon}</div>
+                <div class="task-content">
+                    <div class="task-header">
+                        <span class="task-title">${toolName}</span>
+                        <span class="task-status-badge ${statusBadgeClass}">${statusText}</span>
+                        ${hasChildren ? '<span class="expand-icon">▶</span>' : ''}
+                    </div>
+                    <div class="task-desc">${parentTask.description || '无描述'}</div>
+                    <div class="task-meta-row">
+                        <span class="task-time">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <polyline points="12 6 12 12 16 14"/>
+                            </svg>
+                            ${formatTime(submitTime)}
+                        </span>
+                        ${isUrgent ? `<span class="task-expire-tag urgent">&#9200; 剩余 ${expiresIn} 小时过期</span>` : ''}
+                        ${parentTask.status === '执行中' ? `
+                            <div class="task-progress-mini">
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" style="width: ${parentTask.progress || 0}%"></div>
+                                </div>
+                                <span class="progress-text">${parentTask.progress || 0}%</span>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+                <div class="task-actions-col">
+                    ${parentTask.status === '执行成功' && parentTask.downloadPath ? `
+                        <button class="task-action-btn download" onclick="event.stopPropagation(); downloadTask('${parentTask.taskId}')">
+                            <svg viewBox="0 0 24 24" fill="white" width="14" height="14">
+                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                            </svg>
+                            下载
+                        </button>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+
+        if (hasChildren) {
+            html += `<div class="child-tasks-container" id="child-tasks-${parentTask.taskId}" style="display: none;">`;
+            
+            const children = childTasks.filter(c => c.fatherTaskId === parentTask.taskId);
+            children.forEach(child => {
+                const childSubmitTime = new Date(child.submitTime);
+                const childHoursAgo = Math.floor((now - childSubmitTime) / (1000 * 60 * 60));
+                const childExpiresIn = Math.max(0, 24 - childHoursAgo);
+
+                let childStatusIcon = '';
+                let childStatusClass = '';
+                let childStatusBadgeClass = '';
+                let childStatusText = '';
+
+                if (child.status === '执行成功') {
+                    childStatusIcon = '&#10003;';
+                    childStatusClass = 'success';
+                    childStatusBadgeClass = 'success';
+                    childStatusText = '已完成';
+                } else if (child.status === '执行中') {
+                    childStatusIcon = '&#9679;';
+                    childStatusClass = 'processing';
+                    childStatusBadgeClass = 'processing';
+                    childStatusText = '进行中';
+                } else if (child.status === '排队中') {
+                    childStatusIcon = '&#9675;';
+                    childStatusClass = 'pending';
+                    childStatusBadgeClass = 'pending';
+                    childStatusText = '排队中';
+                } else {
+                    childStatusIcon = '&#10007;';
+                    childStatusClass = 'failed';
+                    childStatusBadgeClass = 'failed';
+                    childStatusText = '失败';
+                }
+
+                const childToolName = tools[child.type]?.name || child.type;
+                const childIsUrgent = childExpiresIn < 10 && childExpiresIn > 0 && child.status === '执行成功';
+
+                html += `
+                    <div class="task-card child-task status-${childStatusClass}">
+                        <div class="task-status-icon ${childStatusClass}">${childStatusIcon}</div>
+                        <div class="task-content">
+                            <div class="task-header">
+                                <span class="task-title">${childToolName}</span>
+                                <span class="task-status-badge ${childStatusBadgeClass}">${childStatusText}</span>
+                            </div>
+                            <div class="task-desc">${child.description || '无描述'}</div>
+                            <div class="task-meta-row">
+                                <span class="task-time">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <polyline points="12 6 12 12 16 14"/>
+                                    </svg>
+                                    ${formatTime(childSubmitTime)}
+                                </span>
+                                ${childIsUrgent ? `<span class="task-expire-tag urgent">&#9200; 剩余 ${childExpiresIn} 小时过期</span>` : ''}
+                                ${child.status === '执行中' ? `
+                                    <div class="task-progress-mini">
+                                        <div class="progress-bar-bg">
+                                            <div class="progress-bar-fill" style="width: ${child.progress || 0}%"></div>
+                                        </div>
+                                        <span class="progress-text">${child.progress || 0}%</span>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                        <div class="task-actions-col">
+                            ${child.status === '执行成功' && child.downloadPath ? `
+                                <button class="task-action-btn download" onclick="downloadTask('${child.taskId}')">
+                                    <svg viewBox="0 0 24 24" fill="white" width="14" height="14">
+                                        <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                                    </svg>
+                                    下载
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+        }
+    });
+
+    html += '</div>';
+    container.innerHTML = html;
+
+    pagination.style.display = 'flex';
+
+    // 更新分页信息
+    document.getElementById('pageStart').textContent = startIndex + 1;
+    document.getElementById('pageEnd').textContent = endIndex;
+    document.getElementById('pageTotal').textContent = filteredTasks.length;
+
+    renderPaginationWithFrontendPagination();
+}
+
+/**
+ * 渲染分页控件（前端分页模式）
+ */
+function renderPaginationWithFrontendPagination() {
+    const numbersContainer = document.getElementById('paginationNumbers');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+
+    prevBtn.disabled = currentPage <= 0;
+    nextBtn.disabled = currentPage >= totalPages - 1 || totalPages === 0;
+
+    if (totalPages <= 1) {
+        numbersContainer.innerHTML = '';
+        return;
+    }
+
+    let pages = [];
+    if (totalPages <= 5) {
+        pages = Array.from({length: totalPages}, (_, i) => i);
+    } else {
+        if (currentPage <= 2) {
+            pages = [0, 1, 2, 3, '...', totalPages - 1];
+        } else if (currentPage >= totalPages - 3) {
+            pages = [0, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1];
+        } else {
+            pages = [0, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages - 1];
+        }
+    }
+
+    numbersContainer.innerHTML = pages.map(p => {
+        if (p === '...') {
+            return `<span class="pagination-number" style="cursor: default; border: none; background: transparent;">...</span>`;
+        }
+        const isActive = p === currentPage;
+        return `<button class="pagination-number ${isActive ? 'active' : ''}" onclick="goToFrontendPage(${p})">${p + 1}</button>`;
+    }).join('');
+}
+
+/**
+ * 跳转到指定页（前端分页模式）
+ */
+function goToFrontendPage(page) {
+    currentPage = page;
+    renderHistoryTasksWithFrontendPagination();
+    document.getElementById('historyContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * 状态筛选（前端分页模式）
+ */
+function filterTasks() {
+    currentStatusFilter = document.getElementById('statusFilter').value;
+    currentPage = 0;
+    
+    // 应用筛选
+    if (currentStatusFilter === 'all') {
+        filteredTasks = [...allTasks];
+    } else {
+        filteredTasks = allTasks.filter(t => t.status === currentStatusFilter);
+    }
+    
+    // 应用搜索
+    if (currentSearch.trim()) {
+        const keyword = currentSearch.toLowerCase();
+        filteredTasks = filteredTasks.filter(t => {
+            const toolName = (tools[t.type]?.name || t.type).toLowerCase();
+            const desc = (t.description || '').toLowerCase();
+            return toolName.includes(keyword) || desc.includes(keyword);
+        });
+    }
+    
+    // 应用排序
+    filteredTasks.sort((a, b) => {
+        const timeA = new Date(a.submitTime).getTime();
+        const timeB = new Date(b.submitTime).getTime();
+        return currentSort === 'newest' ? timeB - timeA : timeA - timeB;
+    });
+    
+    totalElements = filteredTasks.length;
+    totalPages = Math.ceil(totalElements / pageSize);
+    
+    renderHistoryTasksWithFrontendPagination();
+}
+
+/**
+ * 排序（前端分页模式）
+ */
+function sortTasks() {
+    currentSort = document.getElementById('sortFilter').value;
+    currentPage = 0;
+    
+    filteredTasks.sort((a, b) => {
+        const timeA = new Date(a.submitTime).getTime();
+        const timeB = new Date(b.submitTime).getTime();
+        return currentSort === 'newest' ? timeB - timeA : timeA - timeB;
+    });
+    
+    totalPages = Math.ceil(filteredTasks.length / pageSize);
+    renderHistoryTasksWithFrontendPagination();
+}
+
+/**
+ * 搜索（前端分页模式）
+ */
+function searchTasks() {
+    currentSearch = document.getElementById('searchInput').value;
+    currentPage = 0;
+    
+    // 先应用状态筛选
+    if (currentStatusFilter === 'all') {
+        filteredTasks = [...allTasks];
+    } else {
+        filteredTasks = allTasks.filter(t => t.status === currentStatusFilter);
+    }
+    
+    // 应用搜索
+    if (currentSearch.trim()) {
+        const keyword = currentSearch.toLowerCase();
+        filteredTasks = filteredTasks.filter(t => {
+            const toolName = (tools[t.type]?.name || t.type).toLowerCase();
+            const desc = (t.description || '').toLowerCase();
+            return toolName.includes(keyword) || desc.includes(keyword);
+        });
+    }
+    
+    // 应用排序
+    filteredTasks.sort((a, b) => {
+        const timeA = new Date(a.submitTime).getTime();
+        const timeB = new Date(b.submitTime).getTime();
+        return currentSort === 'newest' ? timeB - timeA : timeA - timeB;
+    });
+    
+    totalElements = filteredTasks.length;
+    totalPages = Math.ceil(totalElements / pageSize);
+    
+    renderHistoryTasksWithFrontendPagination();
+}
+
+/**
+ * 渲染历史任务列表（后端分页版本）
+ */
+function renderHistoryTasksFromBackend() {
+    const container = document.getElementById('historyContainer');
+    const statsBar = document.getElementById('historyStats');
+    const filterBar = document.getElementById('historyFilterBar');
+    const pagination = document.getElementById('paginationContainer');
+
+    // 显示统计栏和筛选栏
+    statsBar.style.display = 'grid';
+    filterBar.style.display = 'flex';
+
+    if (!filteredTasks || filteredTasks.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.5" width="64" height="64">
+                    <path d="M12 20v-6m0 0l-3 3m3-3l3 3"/>
+                    <path d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                </svg>
+                <p>暂无匹配的任务</p>
+                <p class="empty-hint">试试调整筛选条件或搜索关键词</p>
+            </div>
+        `;
+        pagination.style.display = 'none';
+        return;
+    }
+
+    const now = new Date();
+
+    container.innerHTML = '<div class="task-list">' + filteredTasks.map(task => {
         const submitTime = new Date(task.submitTime);
         const hoursAgo = Math.floor((now - submitTime) / (1000 * 60 * 60));
         const expiresIn = Math.max(0, 24 - hoursAgo);
-        
+
         let statusIcon = '';
         let statusClass = '';
+        let statusBadgeClass = '';
+        let statusText = '';
+
         if (task.status === '执行成功') {
-            statusIcon = '✓';
-            statusClass = 'status-success';
+            statusIcon = '&#10003;';
+            statusClass = 'success';
+            statusBadgeClass = 'success';
+            statusText = '已完成';
         } else if (task.status === '执行中') {
-            statusIcon = '◐';
-            statusClass = 'status-processing';
+            statusIcon = '&#9679;';
+            statusClass = 'processing';
+            statusBadgeClass = 'processing';
+            statusText = '进行中';
         } else if (task.status === '排队中') {
-            statusIcon = '○';
-            statusClass = 'status-pending';
+            statusIcon = '&#9675;';
+            statusClass = 'pending';
+            statusBadgeClass = 'pending';
+            statusText = '排队中';
         } else {
-            statusIcon = '✗';
-            statusClass = 'status-failed';
+            statusIcon = '&#10007;';
+            statusClass = 'failed';
+            statusBadgeClass = 'failed';
+            statusText = '失败';
         }
-        
+
         const toolName = tools[task.type]?.name || task.type;
-        
+        const isUrgent = expiresIn < 10 && expiresIn > 0 && task.status === '执行成功';
+
         return `
-            <div class="task-item">
-                <div class="task-status ${statusClass}">${statusIcon}</div>
-                <div class="task-info">
-                    <h4>${toolName}</h4>
-                    <p>${task.description || '无描述'}</p>
-                    <div class="task-meta">
-                        <span>提交于 ${formatTime(submitTime)}</span>
-                        ${expiresIn < 10 && expiresIn > 0 ? `<span class="expire-warning">剩余${expiresIn}小时过期</span>` : ''}
+            <div class="task-card status-${statusClass}">
+                <div class="task-status-icon ${statusClass}">${statusIcon}</div>
+                <div class="task-content">
+                    <div class="task-header">
+                        <span class="task-title">${toolName}</span>
+                        <span class="task-status-badge ${statusBadgeClass}">${statusText}</span>
+                    </div>
+                    <div class="task-desc">${task.description || '无描述'}</div>
+                    <div class="task-meta-row">
+                        <span class="task-time">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <polyline points="12 6 12 12 16 14"/>
+                            </svg>
+                            ${formatTime(submitTime)}
+                        </span>
+                        ${isUrgent ? `<span class="task-expire-tag urgent">&#9200; 剩余 ${expiresIn} 小时过期</span>` : ''}
+                        ${task.status === '执行中' ? `
+                            <div class="task-progress-mini">
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" style="width: ${task.progress || 0}%"></div>
+                                </div>
+                                <span class="progress-text">${task.progress || 0}%</span>
+                            </div>
+                        ` : ''}
                     </div>
                 </div>
-                <div class="task-actions">
+                <div class="task-actions-col">
                     ${task.status === '执行成功' && task.downloadPath ? `
-                        <button class="download-btn" onclick="downloadTask('${task.taskId}')">下载</button>
+                        <button class="task-action-btn download" onclick="downloadTask('${task.taskId}')">
+                            <svg viewBox="0 0 24 24" fill="white" width="14" height="14">
+                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                            </svg>
+                            下载
+                        </button>
                     ` : ''}
-                    <button class="delete-btn" onclick="deleteTask('${task.taskId}')">删除</button>
                 </div>
             </div>
         `;
-    }).join('');
-    
+    }).join('') + '</div>';
+
+    pagination.style.display = 'flex';
+
+    // 更新分页信息
+    const start = currentPage * pageSize + 1;
+    const end = Math.min(start + filteredTasks.length - 1, totalElements);
+    document.getElementById('pageStart').textContent = start;
+    document.getElementById('pageEnd').textContent = end;
+    document.getElementById('pageTotal').textContent = totalElements;
+
     // 轮询更新进行中的任务
-    startTaskProgressPoll(tasks.filter(t => t.status === '执行中'));
+    startTaskProgressPoll(filteredTasks.filter(t => t.status === '执行中'));
+}
+
+/**
+ * 渲染分页控件（后端分页版本）
+ */
+function renderPaginationFromBackend() {
+    const numbersContainer = document.getElementById('paginationNumbers');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+
+    // 更新上一页/下一页按钮状态
+    prevBtn.disabled = currentPage <= 0;
+    nextBtn.disabled = currentPage >= totalPages - 1 || totalPages === 0;
+
+    if (totalPages <= 1) {
+        numbersContainer.innerHTML = '';
+        return;
+    }
+
+    // 生成页码按钮（最多显示5个页码）
+    let pages = [];
+    if (totalPages <= 5) {
+        pages = Array.from({length: totalPages}, (_, i) => i);
+    } else {
+        if (currentPage <= 2) {
+            pages = [0, 1, 2, 3, '...', totalPages - 1];
+        } else if (currentPage >= totalPages - 3) {
+            pages = [0, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1];
+        } else {
+            pages = [0, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages - 1];
+        }
+    }
+
+    numbersContainer.innerHTML = pages.map(p => {
+        if (p === '...') {
+            return `<span class="pagination-number" style="cursor: default; border: none; background: transparent;">...</span>`;
+        }
+        const isActive = p === currentPage;
+        // 显示页码时加1（用户看到的页码从1开始）
+        return `<button class="pagination-number ${isActive ? 'active' : ''}" onclick="goToPage(${p})">${p + 1}</button>`;
+    }).join('');
+}
+
+/**
+ * 跳转到指定页（后端分页版本）
+ * @param {number} page 页码（从0开始）
+ */
+function goToPage(page) {
+    currentPage = page;
+    loadHistoryTasks();
+    // 滚动到列表顶部
+    document.getElementById('historyContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * 上一页/下一页（后端分页版本）
+ * @param {number} delta 页码变化量
+ */
+function changePage(delta) {
+    const newPage = currentPage + delta;
+    if (newPage >= 0 && newPage < totalPages) {
+        goToFrontendPage(newPage);
+    }
+}
+
+/**
+ * 改变每页显示数量（前端分页模式）
+ */
+function changePageSize() {
+    pageSize = parseInt(document.getElementById('pageSize').value, 10);
+    currentPage = 0;
+    totalPages = Math.ceil(filteredTasks.length / pageSize);
+    renderHistoryTasksWithFrontendPagination();
 }
 
 /**
@@ -1142,18 +1901,6 @@ function downloadTask(taskId) {
         });
 }
 
-/**
- * 删除任务
- * 
- * @param {string} taskId 任务ID
- */
-function deleteTask(taskId) {
-    if (confirm('确定删除此任务？')) {
-        // 实际应调用后端删除接口
-        showNotification('提示', '任务已删除', 'success');
-        loadHistoryTasks();
-    }
-}
 
 /**
  * 轮询任务进度

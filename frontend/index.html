@@ -163,14 +163,14 @@
             </div>
             
             <div class="tools-grid">
-                <div class="tool-card" data-tool="drama-generation">
-                    <div class="tool-icon" style="background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%);">
+                <div class="tool-card" data-tool="science-video">
+                    <div class="tool-icon" style="background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);">
                         <svg viewBox="0 0 24 24" fill="white">
-                            <path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4zm-6.75 11.25L8 12l3.25 3.25L14 12l-2.75-3.25zM17 18H7V6h10v12z"/>
+                            <path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/>
                         </svg>
                     </div>
-                    <h3>短剧生成</h3>
-                    <p>上传剧本文档，AI为您生成完整短剧视频</p>
+                    <h3>科普视频生成</h3>
+                    <p>输入解说词，AI为您生成完整科普视频</p>
                     <button class="tool-btn">开始使用</button>
                 </div>
             </div>
@@ -181,7 +181,55 @@
                 <h2>📋 历史任务</h2>
                 <p>任务仅保留24小时，请尽快下载您的作品</p>
             </div>
-            
+
+            <!-- 任务统计栏 -->
+            <div class="history-stats" id="historyStats" style="display: none;">
+                <div class="stat-card stat-total">
+                    <span class="stat-number" id="statTotal">0</span>
+                    <span class="stat-label">全部任务</span>
+                </div>
+                <div class="stat-card stat-success">
+                    <span class="stat-number" id="statSuccess">0</span>
+                    <span class="stat-label">已完成</span>
+                </div>
+                <div class="stat-card stat-processing">
+                    <span class="stat-number" id="statProcessing">0</span>
+                    <span class="stat-label">进行中</span>
+                </div>
+                <div class="stat-card stat-pending">
+                    <span class="stat-number" id="statPending">0</span>
+                    <span class="stat-label">排队中</span>
+                </div>
+            </div>
+
+            <!-- 筛选栏 -->
+            <div class="history-filter-bar" id="historyFilterBar" style="display: none;">
+                <div class="filter-group">
+                    <label>状态筛选：</label>
+                    <select id="statusFilter" onchange="filterTasks()">
+                        <option value="all">全部</option>
+                        <option value="执行成功">已完成</option>
+                        <option value="执行中">进行中</option>
+                        <option value="排队中">排队中</option>
+                        <option value="执行失败">失败</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>排序：</label>
+                    <select id="sortFilter" onchange="sortTasks()">
+                        <option value="newest">最新提交</option>
+                        <option value="oldest">最早提交</option>
+                    </select>
+                </div>
+                <div class="filter-search">
+                    <input type="text" id="searchInput" placeholder="搜索任务描述..." oninput="searchTasks()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <circle cx="11" cy="11" r="8"/>
+                        <path d="M21 21l-4.35-4.35"/>
+                    </svg>
+                </div>
+            </div>
+
             <div class="history-container" id="historyContainer">
                 <div class="empty-state">
                     <svg viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.5" width="64" height="64">
@@ -190,6 +238,38 @@
                     </svg>
                     <p>暂无历史任务</p>
                     <p class="empty-hint">完成任务后会在这里显示</p>
+                </div>
+            </div>
+
+            <!-- 分页控件 -->
+            <div class="pagination-container" id="paginationContainer" style="display: none;">
+                <div class="pagination-info">
+                    显示第 <span id="pageStart">1</span> - <span id="pageEnd">5</span> 条，共 <span id="pageTotal">0</span> 条
+                </div>
+                <div class="pagination-controls">
+                    <button class="pagination-btn" id="prevBtn" onclick="changePage(-1)" disabled>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <polyline points="15 18 9 12 15 6"/>
+                        </svg>
+                        上一页
+                    </button>
+                    <div class="pagination-numbers" id="paginationNumbers"></div>
+                    <button class="pagination-btn" id="nextBtn" onclick="changePage(1)" disabled>
+                        下一页
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="page-size-selector">
+                    <label>每页</label>
+                    <select id="pageSize" onchange="changePageSize()">
+                        <option value="5">5</option>
+                        <option value="10">10</option>
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                    </select>
+                    <label>条</label>
                 </div>
             </div>
         </section>
@@ -205,6 +285,84 @@
                 <div class="form-group" id="textSection">
                     <label for="inputText">输入文字</label>
                     <textarea id="inputText" placeholder="请输入描述文字..."></textarea>
+                </div>
+                <div class="form-group" id="speakerSection" style="display: none;">
+                    <label for="speakerSelect">播音员</label>
+                    <div class="custom-select-wrapper">
+                        <select id="speakerSelect" class="custom-select">
+                            <option value="Vivian">
+                                <span class="speaker-name">Vivian</span>
+                                <span class="speaker-desc">【年轻女声，明亮略带锐利】</span>
+                                <span class="speaker-lang">（中文）</span>
+                            </option>
+                            <option value="Serena">
+                                <span class="speaker-name">Serena</span>
+                                <span class="speaker-desc">【温柔女声，温暖亲切】</span>
+                                <span class="speaker-lang">（中文）</span>
+                            </option>
+                            <option value="Uncle_Fu">
+                                <span class="speaker-name">Uncle_Fu</span>
+                                <span class="speaker-desc">【成熟男声，低沉醇厚】</span>
+                                <span class="speaker-lang">（中文）</span>
+                            </option>
+                            <option value="Dylan">
+                                <span class="speaker-name">Dylan</span>
+                                <span class="speaker-desc">【北京男声，清晰自然】</span>
+                                <span class="speaker-lang">（北京方言）</span>
+                            </option>
+                            <option value="Eric">
+                                <span class="speaker-name">Eric</span>
+                                <span class="speaker-desc">【成都男声，活泼沙哑】</span>
+                                <span class="speaker-lang">（四川方言）</span>
+                            </option>
+                            <option value="Ryan">
+                                <span class="speaker-name">Ryan</span>
+                                <span class="speaker-desc">【动感男声，节奏强劲】</span>
+                                <span class="speaker-lang">（英语）</span>
+                            </option>
+                            <option value="Aiden">
+                                <span class="speaker-name">Aiden</span>
+                                <span class="speaker-desc">【阳光男声，中音清晰】</span>
+                                <span class="speaker-lang">（英语）</span>
+                            </option>
+                            <option value="Ono_Anna">
+                                <span class="speaker-name">Ono_Anna</span>
+                                <span class="speaker-desc">【俏皮女声，轻快灵活】</span>
+                                <span class="speaker-lang">（日语）</span>
+                            </option>
+                            <option value="Sohee">
+                                <span class="speaker-name">Sohee</span>
+                                <span class="speaker-desc">【温暖女声，情感丰富】</span>
+                                <span class="speaker-lang">（韩语）</span>
+                            </option>
+                        </select>
+                        <div class="select-arrow">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group" id="emotionSection" style="display: none;">
+                    <label for="emotionSelect">情绪</label>
+                    <div class="custom-select-wrapper emotion-select">
+                        <select id="emotionSelect" class="custom-select">
+                            <option value="calm" data-emoji="😊">平静</option>
+                            <option value="excited" data-emoji="🎉">兴奋</option>
+                            <option value="serious" data-emoji="😐">严肃</option>
+                            <option value="relaxed" data-emoji="😌">轻松</option>
+                            <option value="curious" data-emoji="🤔">好奇</option>
+                            <option value="surprised" data-emoji="😲">惊讶</option>
+                            <option value="confused" data-emoji="😕">疑惑</option>
+                            <option value="affirmative" data-emoji="✅">肯定</option>
+                            <option value="angry" data-emoji="😠">愤怒</option>
+                        </select>
+                        <div class="select-arrow">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                        </div>
+                    </div>
                 </div>
                 <div class="form-group" id="uploadSection">
                     <label>上传文件</label>
