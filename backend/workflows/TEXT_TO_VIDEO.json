@@ -152,7 +152,7 @@
       "inputs": {
         "width": 1280,
         "height": 704,
-        "length": 125,
+        "length": 72,
         "batch_size": 1,
         "vae": [
           "39",

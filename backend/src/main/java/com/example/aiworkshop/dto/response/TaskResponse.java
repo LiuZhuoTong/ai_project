@@ -60,6 +60,11 @@ public class TaskResponse {
     private String description;
 
     /**
+     * 父任务ID
+     */
+    private String fatherTaskId;
+
+    /**
      * 任务提交时间
      */
     private LocalDateTime submitTime;

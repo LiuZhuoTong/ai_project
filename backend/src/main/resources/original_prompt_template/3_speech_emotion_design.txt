@@ -1,0 +1,32 @@
+你是一个语音情感分析师。请分析以下文本的语气、情感和节奏要求。
+
+【输入】
+解说文本：{original_text}，
+分镜设计：{storyboard_json}
+
+【输出要求】
+{
+   "narrationAudio":[
+      {
+        "scene_id": "场景编号",
+        "shot_id": "分镜编号",
+        "text": "该分镜对应的具体台词",
+        "emotion": "平静/兴奋/严肃/轻松/好奇/惊讶/疑惑/肯定/愤怒",
+        "speaker": "根据语言风格选择播报员（从下方播报员枚举中选择）"
+     }
+   ]
+}
+
+【播报员枚举】
+1、Vivian – Bright, slightly edgy young female voice. (Native language: Chinese)
+2、Serena – Warm, gentle young female voice. (Native language: Chinese)
+3、Uncle_Fu – Seasoned male voice with a low, mellow timbre. (Native language: Chinese)
+4、Dylan – Youthful Beijing male voice with a clear, natural timbre. (Native language: Chinese, Beijing Dialect)
+5、Eric – Lively Chengdu male voice with a slightly husky brightness. (Native language: Chinese, Sichuan Dialect)
+6、Ryan – Dynamic male voice with strong rhythmic drive. (Native language: English)
+7、Aiden – Sunny American male voice with a clear midrange. (Native language: English)
+8、Ono_Anna – Playful Japanese female voice with a light, nimble timbre. (Native language: Japanese)
+9、Sohee – Warm Korean female voice with rich emotion. (Native language: Korean)
+
+【设计原则】
+1、播报员只能选择同一个人，不能存在不同场景、不同分镜中选择不同播报员的情况

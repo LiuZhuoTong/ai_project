@@ -1,0 +1,4 @@
+{
+    "Chinese": "深蓝色海洋上，航空母舰从远处地平线逐渐放大，阳光在海面洒下金色碎光，航母甲板清晰可见，舰岛高耸，周围无其他船只，突出其庞大与孤独的威严。镜头从全景缓慢推进，增强压迫感，画面透视感强，航母位于画面中心偏下，海浪细节真实，天空中有少量云层，整体色调偏冷，阳光从右侧照射，光影自然。",
+    "English": "A massive aircraft carrier emerges from the distant horizon on a deep blue ocean, golden sunlight scattering across the water surface. The flight deck is clearly visible with the island structure towering above, no other ships around, emphasizing its immense and solitary majesty. The camera slowly pushes in from a wide shot, creating a sense of pressure. Strong perspective lines lead the eye to the carrier positioned slightly below center. Realistic wave details, a few clouds in the sky, cool color tone overall, natural lighting from the right side with accurate shadows and reflections."
+}

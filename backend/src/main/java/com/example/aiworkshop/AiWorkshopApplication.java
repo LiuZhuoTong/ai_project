@@ -9,17 +9,20 @@
  *   <li>任务提交与处理模块</li>
  *   <li>任务监控模块</li>
  *   <li>与ComfyUI的集成</li>
+ *   <li>定时任务清理模块</li>
  * </ul>
  */
 package com.example.aiworkshop;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Spring Boot应用主启动类
  */
 @SpringBootApplication
+@EnableScheduling
 public class AiWorkshopApplication {
 
     /**

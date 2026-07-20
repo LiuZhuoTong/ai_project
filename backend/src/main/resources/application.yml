@@ -12,7 +12,7 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
         format_sql: true
@@ -24,11 +24,29 @@ spring:
 
 comfyui:
   url: http://127.0.0.1:8188
-  poll-interval: 5000
+  poll-interval: 60000
 
 workflow:
-  dir: /root/ai-backend/workflows
+  dir: workflows
 
 file:
   upload-dir: /root/comfyui/storage-user/input
   output-dir: /root/comfyui/storage-user/output
+
+# LLM配置
+llm:
+  api-key: sk-111b8ab5df274e65aaad704dcc7e1542
+  base-url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  temperature: 0.7
+  reasoning-effort: high    # 思考模式强度: high 或 max
+
+# 提示词模板配置
+prompt:
+  template-dir: original_prompt_template
+
+# Qwen多模态模型配置
+qwen:
+  api-key: sk-66815fd5e13b4ff19485bb7f5112c1ba
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: qwen3.7-plus

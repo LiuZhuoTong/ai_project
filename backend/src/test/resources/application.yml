@@ -1,0 +1,24 @@
+# LLM配置（测试用）
+llm:
+  api-key: sk-111b8ab5df274e65aaad704dcc7e1542
+  base-url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  reasoning-effort: high
+
+# Qwen多模态模型配置（测试用）
+qwen:
+  api-key: sk-66815fd5e13b4ff19485bb7f5112c1ba
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: qwen3.7-plus
+
+# 提示词模板目录
+prompt:
+  template-dir: original_prompt_template
+
+# 禁用数据源和JPA自动配置（测试不需要数据库）
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration

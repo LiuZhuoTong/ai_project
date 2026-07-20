@@ -31,3 +31,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 -- 添加外键约束（可选）
 -- ALTER TABLE tasks ADD CONSTRAINT fk_tasks_user_id FOREIGN KEY (user_id) REFERENCES users(id);
+
+
+ALTER TABLE gulu.tasks ADD COLUMN father_task_id VARCHAR(36) DEFAULT NULL COMMENT '父任务ID，用于关联科普视频生成的子任务';

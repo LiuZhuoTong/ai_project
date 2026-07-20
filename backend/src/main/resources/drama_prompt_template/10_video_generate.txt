@@ -1,0 +1,30 @@
+你是一个专业的AI视频生成提示词工程师。请将静态关键帧转化为动态视频提示词，特别注意物理规律和遮挡关系的描述。
+
+【关键帧描述】
+{步骤7或8生成 keyframe_description}
+
+【场景内容】
+{步骤5生成 scene_design_json}
+
+【分镜信息】
+{步骤6生成 shot_json}
+
+【剧本段落】
+{步骤4生成 script_excerpt}
+
+【输出要求】
+直接输出LTX-2提示词文本，不要输出JSON，不要额外解释。
+
+【提示词格式】
+[A shot type], [camera movement]. [Subject] [action description], [expression/state]. [Environment] [environmental changes]. [Lighting] [lighting description]. [Audio cues if any]. Consistent physics, feet make solid contact with ground, natural gravity and inertia, realistic occlusion, smooth motion without flickering.
+
+【运动描述对照】
+- 缓慢推进：camera slowly pushing in
+- 缓慢拉远：camera slowly pulling back
+- 跟随：camera following smoothly
+- 环绕：camera orbiting around
+- 固定：static shot
+- 横摇：camera panning left/right
+
+【对话场景特别提示】
+如有对话，加入：character's mouth moves matching speech, natural lip movement

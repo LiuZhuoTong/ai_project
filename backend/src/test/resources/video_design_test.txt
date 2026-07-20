@@ -1,0 +1,5 @@
+{
+   "Chinese": "镜头缓慢向前推进，沿着白色的尾迹靠近航空母舰的尾部。深蓝色的海面波涛起伏，阳光从前方地平线处照射，在海面洒下耀眼的金色碎光，波光粼粼。随着镜头推进，航母庞大的舰体在画面中逐渐放大，甲板上的跑道线和左侧高耸的舰岛结构变得更加清晰。白色的尾迹浪花剧烈翻滚并向后延伸，展现出强大的动力。整体色调偏冷，光影自然，画面充满压迫感与威严感。",
+   "English": "The camera slowly pushes forward along the white wake towards the stern of the aircraft carrier. The deep blue ocean surface is undulating with waves. Sunlight from the distant horizon casts a dazzling golden path on the sea, shimmering brightly. As the camera pushes in, the massive hull of the carrier gradually enlarges in the frame, making the runway lines on the deck and the towering island structure on the left clearer. The white wake foam churns vigorously and trails behind, showing immense power. The overall tone is cool with natural lighting, creating a sense of pressure and majesty.",
+   "estimatedDuration": 5
+}

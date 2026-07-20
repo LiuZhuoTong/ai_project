@@ -9,7 +9,8 @@ public enum TaskType {
     VIDEO_REMOVE_SUBTITLE("视频去字幕"),
     FACE_CONSISTENCY("人物一致性迁移"),
     TEXT_TO_SPEECH("文字生成语音"),
-    LYRICS_TO_SONG("歌词生成歌曲");
+    LYRICS_TO_SONG("歌词生成歌曲"),
+    SCIENCE_VIDEO("科普视频生成");
 
     private final String description;
 

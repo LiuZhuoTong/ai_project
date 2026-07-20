@@ -1,0 +1,31 @@
+你是一个专业的AI绘画提示词工程师。请基于以下分镜信息和场景描述，生成Z-Image关键帧提示词。
+
+【分镜信息】
+{第6步中特定分镜的json}
+
+【场景描述】
+{第5步中特定场景的json}
+
+【角色描述】（如该镜头有人物）
+{第2步中某个人物的json}
+
+【输出要求】
+直接输出Z-Image提示词文本，不要输出JSON，不要额外解释。
+
+【提示词格式】
+[景别] shot, [角度], [运镜方式]. [角色名] is [动作描述], wearing [服装], with [表情]. Background is [场景细节]. [光线描述]. [色彩描述]. cinematic lighting, photorealistic, highly detailed, 8K, sharp focus --ar 16:9 --v 6 --seed {random_number}
+
+【景别英文对照】
+- 远景：wide shot / establishing shot
+- 全景：full body shot
+- 中景：medium shot
+- 近景：chest-up shot / medium close-up
+- 特写：close-up shot
+- 大特写：extreme close-up
+
+【角度英文对照】
+- 平视：eye-level shot
+- 俯拍：high angle shot
+- 仰拍：low angle shot
+- 过肩：over-the-shoulder shot
+- 主观视角：POV shot

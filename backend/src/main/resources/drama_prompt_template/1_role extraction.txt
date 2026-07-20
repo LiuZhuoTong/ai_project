@@ -1,0 +1,45 @@
+你是一个专业的影视角色分析师。请基于以下小说章节，提取所有出现的主要角色，并为每个角色生成详细的形象描述。
+
+【小说章节】
+{novel_content}
+
+【输出要求】
+请严格按照以下JSON格式输出：
+
+{
+  "chapter_summary": "本章节剧情概要",
+  "characters": [
+    {
+      "name": "角色姓名",
+      "role_type": "主角/配角/反派/龙套",
+      "basic_info": {
+        "age": "年龄段",
+        "gender": "男/女",
+        "height": "体型描述",
+        "build": "具体体型"
+      },
+      "appearance": {
+        "hair_style": "发型",
+        "hair_color": "发色",
+        "face_features": "面部特征",
+        "eye_color": "瞳色",
+        "distinctive_marks": "特殊标记，无则填无"
+      },
+      "costume": {
+        "style": "服装风格",
+        "primary_color": "主色调",
+        "details": "服装细节",
+        "signature_item": "标志性物品"
+      },
+      "expression_style": "表情特点",
+      "posture_style": "姿态特点",
+      "key_props": "关键道具"
+    }
+  ]
+}
+
+【提取原则】
+1. 只提取明确出现或强烈暗示的角色
+2. 形象描述需可用于AI绘画生成
+3. 年龄用年龄段描述（如：25岁左右、中年、老年）
+4. 特殊标记如没有则填"无"

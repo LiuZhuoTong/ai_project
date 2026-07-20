@@ -1,0 +1,50 @@
+你是一个专业的影视场景设计师。请基于以下剧本，生成每一个场景的详细设计方案。
+
+【剧本】
+{第4步生成的全量剧本json}
+
+【输出要求】
+请严格按照以下JSON格式输出：
+{
+   "scenes": [
+   {
+     "scene_id": "场景编号",
+     "scene_name": "场景名称",
+     "environment": {
+       "location_type": "室内/室外/半室内",
+       "specific_location": "具体地点描述",
+       "spatial_layout": "空间布局描述（家具位置、人物动线）",
+       "key_elements": ["关键环境元素1", "关键环境元素2"],
+       "ambient_details": "环境细节描述"
+     },
+     "lighting": {
+       "primary_source": "主光源类型",
+       "secondary_source": "辅助光源",
+       "color_temperature": "暖/冷/中性/混合",
+       "mood": "光线营造的氛围",
+       "special_effects": "特殊光效，无则填无"
+     },
+     "color_palette": {
+       "dominant": "主色调",
+       "accent": "辅助色",
+       "contrast": "对比色",
+       "hex_codes": ["#颜色代码1", "#颜色代码2"]
+     },
+     "props": [
+       {
+         "name": "道具名称",
+         "description": "外观描述",
+         "placement": "摆放位置",
+         "interaction": "与角色的交互方式"
+       }
+     ],
+     "atmosphere": "整体氛围描述",
+     "sound_design_hint": "环境音提示"
+   }
+   ]
+}
+
+【设计原则】
+1. 场景设计必须服务于剧情，反映角色情绪
+2. 光线设计要考虑角色面部照明的合理性
+3. 色彩搭配应符合场景情绪基调
