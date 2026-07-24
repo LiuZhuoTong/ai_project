@@ -20,7 +20,7 @@
 【播报员枚举】
 1、Vivian – Bright, slightly edgy young female voice. (Native language: Chinese)
 2、Serena – Warm, gentle young female voice. (Native language: Chinese)
-3、Uncle_Fu – Seasoned male voice with a low, mellow timbre. (Native language: Chinese)
+3、Uncle_fu – Seasoned male voice with a low, mellow timbre. (Native language: Chinese)
 4、Dylan – Youthful Beijing male voice with a clear, natural timbre. (Native language: Chinese, Beijing Dialect)
 5、Eric – Lively Chengdu male voice with a slightly husky brightness. (Native language: Chinese, Sichuan Dialect)
 6、Ryan – Dynamic male voice with strong rhythmic drive. (Native language: English)

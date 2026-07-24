@@ -83,6 +83,66 @@ public interface TaskRepository extends JpaRepository<Task, String> {
                                                   Pageable pageable);
 
     /**
+     * 根据用户ID查询父任务（fatherTaskId为空）
+     * 
+     * @param userId 用户ID
+     * @param pageable 分页参数
+     * @return 分页父任务列表
+     */
+    Page<Task> findByUserIdAndFatherTaskIdIsNull(String userId, Pageable pageable);
+
+    /**
+     * 根据用户ID和状态查询父任务
+     * 
+     * @param userId 用户ID
+     * @param status 任务状态
+     * @param pageable 分页参数
+     * @return 分页父任务列表
+     */
+    Page<Task> findByUserIdAndStatusAndFatherTaskIdIsNull(String userId, String status, Pageable pageable);
+
+    /**
+     * 根据用户ID和关键词搜索父任务
+     * 
+     * @param userId 用户ID
+     * @param keyword 搜索关键词
+     * @param pageable 分页参数
+     * @return 分页父任务列表
+     */
+    @Query("SELECT t FROM Task t WHERE t.userId = :userId AND t.fatherTaskId IS NULL AND " +
+           "(LOWER(t.type) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%')))")
+    Page<Task> searchParentByUserIdAndKeyword(@Param("userId") String userId, 
+                                              @Param("keyword") String keyword, 
+                                              Pageable pageable);
+
+    /**
+     * 根据用户ID、状态和关键词搜索父任务
+     * 
+     * @param userId 用户ID
+     * @param status 任务状态
+     * @param keyword 搜索关键词
+     * @param pageable 分页参数
+     * @return 分页父任务列表
+     */
+    @Query("SELECT t FROM Task t WHERE t.userId = :userId AND t.status = :status AND t.fatherTaskId IS NULL AND " +
+           "(LOWER(t.type) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+           "LOWER(t.description) LIKE LOWER(CONCAT('%', :keyword, '%')))")
+    Page<Task> searchParentByUserIdAndStatusAndKeyword(@Param("userId") String userId, 
+                                                        @Param("status") String status, 
+                                                        @Param("keyword") String keyword, 
+                                                        Pageable pageable);
+
+    /**
+     * 根据用户ID和父任务ID列表查询子任务
+     * 
+     * @param userId 用户ID
+     * @param fatherTaskIds 父任务ID列表
+     * @return 子任务列表
+     */
+    List<Task> findByUserIdAndFatherTaskIdIn(String userId, List<String> fatherTaskIds);
+
+    /**
      * 根据状态查询任务列表
      * 
      * @param status 任务状态

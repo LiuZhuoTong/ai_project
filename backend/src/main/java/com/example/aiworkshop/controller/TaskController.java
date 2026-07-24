@@ -18,6 +18,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -101,6 +102,7 @@ public class TaskController {
      * @param status 状态筛选（可选，默认"all"）
      * @param sort 排序方式（可选，默认"newest"）
      * @param keyword 搜索关键词（可选）
+     * @param onlyParent 是否只查询父任务（可选，默认false）
      * @return 分页响应
      */
     @GetMapping("/user/{userId}/paged")
@@ -110,13 +112,33 @@ public class TaskController {
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(defaultValue = "all") String status,
             @RequestParam(defaultValue = "newest") String sort,
-            @RequestParam(required = false) String keyword) {
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "false") boolean onlyParent) {
         
-        log.info("分页查询用户任务: userId={}, page={}, size={}, status={}, sort={}, keyword={}", 
-                 userId, page, size, status, sort, keyword);
+        log.info("分页查询用户任务列表: userId={}, page={}, size={}, status={}, sort={}, keyword={}, onlyParent={}", 
+                 userId, page, size, status, sort, keyword, onlyParent);
         
-        PageResponse<TaskResponse> response = taskService.getTasksByUserPaged(userId, page, size, status, sort, keyword);
+        PageResponse<TaskResponse> response = taskService.getTasksByUserPaged(userId, page, size, status, sort, keyword, onlyParent);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 批量获取父任务的子任务
+     * 
+     * @param userId 用户ID
+     * @param parentIds 父任务ID列表（逗号分隔）
+     * @return 子任务列表
+     */
+    @GetMapping("/user/{userId}/children")
+    public ResponseEntity<List<TaskResponse>> getChildTasksByParentIds(
+            @PathVariable String userId,
+            @RequestParam String parentIds) {
+        
+        log.info("批量获取子任务: userId={}, parentIds={}", userId, parentIds);
+        
+        List<String> parentIdList = Arrays.asList(parentIds.split(","));
+        List<TaskResponse> childTasks = taskService.getChildTasksByParentIds(userId, parentIdList);
+        return ResponseEntity.ok(childTasks);
     }
 
     @PostMapping("/submit/science-video")
@@ -127,12 +149,7 @@ public class TaskController {
         log.info("提交科普视频生成任务: userId={}, narrationLength={}", userId, narration != null ? narration.length() : 0);
         
         try {
-            String shortDescription = narration;
-            if (shortDescription != null && shortDescription.length() > 15) {
-                shortDescription = shortDescription.substring(0, 15);
-            }
-
-            String taskId = taskService.submitTask(userId, TaskType.SCIENCE_VIDEO, shortDescription, null, null, null, null, false, null);
+            String taskId = taskService.submitTask(userId, TaskType.SCIENCE_VIDEO, narration, null, null, null, null, false, null);
             
             Map<String, Object> result = new HashMap<>();
             result.put("success", true);

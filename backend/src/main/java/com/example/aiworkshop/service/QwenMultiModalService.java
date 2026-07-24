@@ -4,10 +4,12 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,6 +40,21 @@ public class QwenMultiModalService {
     @Value("${qwen.model:qwen3.7-plus}")
     private String model;
 
+    @Value("${qwen.timeout.connect:30000}")
+    private int connectTimeout;
+
+    @Value("${qwen.timeout.read:120000}")
+    private int readTimeout;
+
+    @Value("${qwen.timeout.connection-request:30000}")
+    private int connectionRequestTimeout;
+
+    @Value("${qwen.retry.max:3}")
+    private int maxRetry;
+
+    @Value("${qwen.retry.delay:2000}")
+    private long retryDelay;
+
     private String chatEndpoint;
 
     private CloseableHttpClient httpClient;
@@ -48,6 +65,8 @@ public class QwenMultiModalService {
         log.info("API Key: {}", apiKey != null && !apiKey.isEmpty() ? "已配置" : "未配置");
         log.info("Base URL: {}", baseUrl);
         log.info("Model: {}", model);
+        log.info("连接超时: {}ms, 读取超时: {}ms", connectTimeout, readTimeout);
+        log.info("最大重试次数: {}, 重试间隔: {}ms", maxRetry, retryDelay);
 
         // 拼接聊天补全接口地址
         String url = baseUrl;
@@ -57,7 +76,16 @@ public class QwenMultiModalService {
         url += "chat/completions";
         this.chatEndpoint = url;
 
-        this.httpClient = HttpClients.createDefault();
+        // 配置HttpClient，设置超时时间和连接池
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setConnectTimeout(connectTimeout)
+                .setSocketTimeout(readTimeout)
+                .setConnectionRequestTimeout(connectionRequestTimeout)
+                .build();
+
+        this.httpClient = HttpClientBuilder.create()
+                .setDefaultRequestConfig(requestConfig)
+                .build();
         log.info("Qwen多模态服务初始化成功，聊天接口: {}", chatEndpoint);
     }
 
@@ -180,7 +208,7 @@ public class QwenMultiModalService {
         requestBody.put("max_tokens", 4096);
 
         String jsonBody = JSON.toJSONString(requestBody);
-        log.debug("请求体: {}", jsonBody);
+        log.debug("请求体长度: {} 字符", jsonBody.length());
 
         // 创建HTTP POST请求
         HttpPost httpPost = new HttpPost(chatEndpoint);
@@ -188,31 +216,66 @@ public class QwenMultiModalService {
         httpPost.setHeader("Authorization", "Bearer " + apiKey);
         httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8));
 
-        // 发送请求
-        try (CloseableHttpResponse httpResponse = httpClient.execute(httpPost)) {
-            int statusCode = httpResponse.getStatusLine().getStatusCode();
-            String responseBody = EntityUtils.toString(httpResponse.getEntity(), StandardCharsets.UTF_8);
+        // 添加重试机制
+        IOException lastException = null;
+        for (int attempt = 1; attempt <= maxRetry; attempt++) {
+            try {
+                log.info("第 {}/{} 次调用Qwen多模态API", attempt, maxRetry);
+                
+                // 每次重试都创建新的连接，避免复用已断开的连接
+                try (CloseableHttpClient freshClient = HttpClientBuilder.create()
+                        .setDefaultRequestConfig(
+                                RequestConfig.custom()
+                                        .setConnectTimeout(connectTimeout)
+                                        .setSocketTimeout(readTimeout)
+                                        .setConnectionRequestTimeout(connectionRequestTimeout)
+                                        .build())
+                        .build();
+                     CloseableHttpResponse httpResponse = freshClient.execute(httpPost)) {
+                    
+                    int statusCode = httpResponse.getStatusLine().getStatusCode();
+                    String responseBody = EntityUtils.toString(httpResponse.getEntity(), StandardCharsets.UTF_8);
 
-            if (statusCode != 200) {
-                log.error("Qwen API调用失败, 状态码: {}, 响应: {}", statusCode, responseBody);
-                throw new RuntimeException("Qwen API调用失败, 状态码: " + statusCode + ", 响应: " + responseBody);
+                    if (statusCode != 200) {
+                        log.error("Qwen API调用失败, 状态码: {}, 响应: {}", statusCode, responseBody);
+                        throw new RuntimeException("Qwen API调用失败, 状态码: " + statusCode + ", 响应: " + responseBody);
+                    }
+
+                    // 解析响应（OpenAI兼容格式）
+                    JSONObject responseJson = JSON.parseObject(responseBody);
+                    JSONArray choices = responseJson.getJSONArray("choices");
+                    if (choices == null || choices.isEmpty()) {
+                        log.error("Qwen API返回的choices为空: {}", responseBody);
+                        throw new RuntimeException("Qwen API返回的choices为空");
+                    }
+
+                    JSONObject message = choices.getJSONObject(0).getJSONObject("message");
+                    String contentText = message.getString("content");
+
+                    log.info("响应长度: {} 字符", contentText != null ? contentText.length() : 0);
+                    log.info("响应内容: {}", contentText != null && contentText.length() > 500 ? contentText.substring(0, 500) + "..." : contentText);
+
+                    return contentText;
+                }
+            } catch (IOException e) {
+                lastException = e;
+                log.error("第 {}/{} 次调用Qwen多模态API失败: {}", attempt, maxRetry, e.getMessage());
+                
+                // 如果不是最后一次尝试，等待后重试
+                if (attempt < maxRetry) {
+                    try {
+                        log.info("等待 {}ms 后重试...", retryDelay);
+                        Thread.sleep(retryDelay);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("重试等待被中断", ie);
+                    }
+                }
             }
-
-            // 解析响应（OpenAI兼容格式）
-            JSONObject responseJson = JSON.parseObject(responseBody);
-            JSONArray choices = responseJson.getJSONArray("choices");
-            if (choices == null || choices.isEmpty()) {
-                log.error("Qwen API返回的choices为空: {}", responseBody);
-                throw new RuntimeException("Qwen API返回的choices为空");
-            }
-
-            JSONObject message = choices.getJSONObject(0).getJSONObject("message");
-            String contentText = message.getString("content");
-
-            log.info("响应长度: {} 字符", contentText != null ? contentText.length() : 0);
-            log.info("响应内容: {}", contentText != null && contentText.length() > 500 ? contentText.substring(0, 500) + "..." : contentText);
-
-            return contentText;
         }
+
+        // 所有重试都失败
+        log.error("Qwen多模态模型调用失败，已重试 {} 次", maxRetry);
+        throw lastException != null ? lastException : new IOException("Qwen多模态模型调用失败");
     }
 }

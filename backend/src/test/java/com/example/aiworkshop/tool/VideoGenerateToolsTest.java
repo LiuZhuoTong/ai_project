@@ -290,7 +290,7 @@ public class VideoGenerateToolsTest {
         log.info("测试图片路径: {}", imagePath);
 
         // 调用 videoDesign 方法
-        VideoDesignResponse response = videoGenerateTools.videoDesign(keyframeResponse, sceneId, shot1, imagePath);
+        VideoDesignResponse response = videoGenerateTools.videoDesign(keyframeResponse, sceneId, shot1, imagePath, 10);
 
         // 验证返回结果不为空
         Assertions.assertNotNull(response, "响应不应为空");

@@ -44,7 +44,7 @@ public class Task {
     @Column(name = "type", length = 50, nullable = false)
     private TaskType type;
 
-    @Column(name = "description", length = 50)
+    @Column(name = "description", length = 2000)
     private String description;
 
     @Column(name = "file_path", length = 500)
@@ -55,9 +55,6 @@ public class Task {
 
     @Transient
     private Boolean isPolish = true;
-
-    @Transient
-    private String prompt;
 
     @Transient
     private String speaker;

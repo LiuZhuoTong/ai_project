@@ -44,6 +44,20 @@ public class VideoGenerateTools {
      * @param response 大模型返回的原始响应
      * @return 提取出的JSON字符串，如果未找到则返回原始响应
      */
+    /**
+     * 从大模型响应中提取JSON数据
+     * <p>智能提取最外层JSON结构，处理以下情况：</p>
+     * <ul>
+     *   <li>Markdown代码块包裹（如 ```json ... ```）</li>
+     *   <li>前后缀文本说明</li>
+     *   <li>字符串内部包含花括号/方括号</li>
+     *   <li>转义字符处理</li>
+     *   <li>大模型返回错误信息的情况</li>
+     * </ul>
+     * 
+     * @param response 大模型的原始响应
+     * @return 提取的JSON字符串，如果无法提取则返回原始响应
+     */
     private String extractJson(String response) {
         if (response == null || response.isEmpty()) {
             return response;
@@ -51,6 +65,19 @@ public class VideoGenerateTools {
         
         response = response.trim();
         
+        // 去除Markdown代码块标记
+        if (response.startsWith("```")) {
+            int endIndex = response.lastIndexOf("```");
+            if (endIndex > 0) {
+                response = response.substring(3, endIndex).trim();
+                // 如果是 ```json 格式，去除 json 标记
+                if (response.startsWith("json")) {
+                    response = response.substring(4).trim();
+                }
+            }
+        }
+        
+        // 查找JSON起始位置
         int braceStart = response.indexOf('{');
         int bracketStart = response.indexOf('[');
         
@@ -73,19 +100,42 @@ public class VideoGenerateTools {
             return response;
         }
         
+        // 正确计算JSON结束位置，处理字符串内部的花括号/方括号
         int depth = 0;
         int jsonEnd = -1;
+        boolean inString = false;
+        boolean escaped = false;
         
         for (int i = jsonStart; i < response.length(); i++) {
             char c = response.charAt(i);
             
-            if (c == startChar) {
-                depth++;
-            } else if (c == endChar) {
-                depth--;
-                if (depth == 0) {
-                    jsonEnd = i + 1;
-                    break;
+            // 处理转义字符
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            
+            // 处理字符串边界
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            
+            if (c == '"') {
+                inString = !inString;
+                continue;
+            }
+            
+            // 只有不在字符串内部时才计数花括号/方括号
+            if (!inString) {
+                if (c == startChar) {
+                    depth++;
+                } else if (c == endChar) {
+                    depth--;
+                    if (depth == 0) {
+                        jsonEnd = i + 1;
+                        break;
+                    }
                 }
             }
         }
@@ -98,7 +148,44 @@ public class VideoGenerateTools {
         String extracted = response.substring(jsonStart, jsonEnd);
         log.debug("提取JSON成功，原始长度: {}, 提取后长度: {}", response.length(), extracted.length());
         
-        return extracted;
+        // 验证JSON是否有效
+        try {
+            JSON.parse(extracted);
+            return extracted;
+        } catch (Exception e) {
+            log.warn("提取的JSON无效，尝试修复。错误: {}", e.getMessage());
+            // 如果提取的JSON无效，尝试简单修复：去除尾部多余字符
+            return fixJson(extracted);
+        }
+    }
+    
+    /**
+     * 简单修复无效JSON
+     * <p>尝试修复常见的JSON格式问题：</p>
+     * <ul>
+     *   <li>去除尾部多余的逗号</li>
+     *   <li>去除尾部多余的字符</li>
+     * </ul>
+     * 
+     * @param json 待修复的JSON字符串
+     * @return 修复后的JSON字符串
+     */
+    private String fixJson(String json) {
+        if (json == null || json.isEmpty()) {
+            return json;
+        }
+        
+        // 去除尾部多余的逗号
+        json = json.replaceAll(",\\s*([}\\]])", "$1");
+        
+        // 再次验证
+        try {
+            JSON.parse(json);
+            return json;
+        } catch (Exception e) {
+            log.warn("JSON修复失败，返回原始JSON");
+            return json;
+        }
     }
 
     private String readTemplate(String fileName) throws IOException {
@@ -325,8 +412,8 @@ public class VideoGenerateTools {
      * @return 视频提示词结果
      */
     public VideoDesignResponse videoDesign(KeyframeDesignResponse keyframeResponse, Integer sceneId, 
-                                          StoryboardDesignResponse.Shot shot, String imagePath) {
-        int duration = shot.getEstimatedDuration() != null ? shot.getEstimatedDuration() : 5;
+                                          StoryboardDesignResponse.Shot shot, String imagePath, Integer customDuration) {
+        int duration = customDuration != null ? customDuration : 5;
         log.info("执行视频提示词生成，场景ID: {}, 时长: {} 秒，图片路径: {}", sceneId, duration, imagePath);
 
         try {

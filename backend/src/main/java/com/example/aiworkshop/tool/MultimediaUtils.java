@@ -29,6 +29,67 @@ public class MultimediaUtils {
     private final TaskService taskService;
 
     /**
+     * 获取音频文件时长（秒）
+     *
+     * <p>使用ffprobe获取音频文件的时长，单位为秒。</p>
+     *
+     * @param audioPath 音频文件路径
+     * @return 音频时长（秒），如果获取失败返回null
+     */
+    public static Integer getAudioDuration(String audioPath) {
+        if (audioPath == null || audioPath.isEmpty()) {
+            log.error("音频路径为空");
+            return null;
+        }
+
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                "ffprobe", "-v", "quiet", "-print_format", "json", "-show_entries",
+                "format=duration", audioPath
+            );
+            processBuilder.redirectErrorStream(true);
+            Process process = processBuilder.start();
+
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line);
+                }
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                log.warn("ffprobe执行失败，退出码: {}, 音频路径: {}", exitCode, audioPath);
+                return null;
+            }
+
+            String jsonOutput = output.toString();
+            int durationIndex = jsonOutput.indexOf("\"duration\"");
+            if (durationIndex == -1) {
+                log.warn("未找到音频时长信息");
+                return null;
+            }
+
+            int colonIndex = jsonOutput.indexOf(":", durationIndex);
+            int commaIndex = jsonOutput.indexOf(",", colonIndex);
+            int endBraceIndex = jsonOutput.indexOf("}", colonIndex);
+            int endIndex = Math.min(commaIndex == -1 ? endBraceIndex : commaIndex, endBraceIndex);
+
+            String durationStr = jsonOutput.substring(colonIndex + 1, endIndex).trim()
+                .replace("\"", "").replace(",", "");
+
+            double duration = Double.parseDouble(durationStr);
+            return (int) Math.ceil(duration);
+
+        } catch (Exception e) {
+            log.error("获取音频时长失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * 带音频视频生成
      *
      * <p>根据视频提示词生成带音频的视频，调用ComfyUI工作流进行图生视频。</p>
@@ -242,6 +303,14 @@ public class MultimediaUtils {
                 if ("执行成功".equals(status)) {
                     String downloadPath = task.getDownloadPath();
                     log.info("语音生成成功，文件路径: {}", downloadPath);
+                    
+                    // 如果是ComfyUI临时文件，复制到安全位置避免被清理
+                    if (downloadPath != null && downloadPath.contains("ComfyUI_temp_")) {
+                        String safePath = copyToSafeLocation(downloadPath);
+                        log.info("已将临时音频文件复制到安全位置: {}", safePath);
+                        return safePath;
+                    }
+                    
                     return downloadPath;
                 }
 
@@ -278,10 +347,18 @@ public class MultimediaUtils {
             throw new IllegalArgumentException("视频路径不能为空");
         }
 
+        if (!isFfmpegAvailable()) {
+            throw new RuntimeException("FFmpeg 未安装或不可用");
+        }
+
         File inputFile = new File(videoPath);
         if (!inputFile.exists()) {
             log.error("视频文件不存在: {}", videoPath);
             throw new RuntimeException("视频文件不存在: " + videoPath);
+        }
+
+        if (!videoPath.toLowerCase().endsWith(".mp4")) {
+            log.warn("视频文件格式不是 MP4，可能影响处理: {}", videoPath);
         }
 
         String outputPath = generateOutputPath(videoPath, "_no_audio");
@@ -310,7 +387,7 @@ public class MultimediaUtils {
                 }
             }
 
-            boolean completed = process.waitFor(5, java.util.concurrent.TimeUnit.MINUTES);
+            boolean completed = process.waitFor(10, java.util.concurrent.TimeUnit.MINUTES);
             if (!completed) {
                 log.error("FFmpeg处理超时，强制终止进程");
                 process.destroyForcibly();
@@ -336,6 +413,18 @@ public class MultimediaUtils {
         }
     }
 
+    private static boolean isFfmpegAvailable() {
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder("ffmpeg", "-version");
+            Process process = processBuilder.start();
+            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            return process.exitValue() == 0;
+        } catch (Exception e) {
+            log.warn("FFmpeg 不可用: {}", e.getMessage());
+            return false;
+        }
+    }
+
     /**
      * 音视频整合
      *
@@ -358,6 +447,10 @@ public class MultimediaUtils {
             throw new IllegalArgumentException("音频路径不能为空");
         }
 
+        if (!isFfmpegAvailable()) {
+            throw new RuntimeException("FFmpeg 未安装或不可用");
+        }
+
         File videoFile = new File(videoPath);
         if (!videoFile.exists()) {
             log.error("视频文件不存在: {}", videoPath);
@@ -370,6 +463,14 @@ public class MultimediaUtils {
             throw new RuntimeException("音频文件不存在: " + audioPath);
         }
 
+        if (!videoPath.toLowerCase().endsWith(".mp4")) {
+            log.warn("视频文件格式不是 MP4，可能影响处理: {}", videoPath);
+        }
+
+        if (!audioPath.toLowerCase().endsWith(".flac")) {
+            log.warn("音频文件格式不是 FLAC，可能影响处理: {}", audioPath);
+        }
+
         String outputPath = generateOutputPath(videoPath, "_with_audio");
 
         try {
@@ -379,7 +480,8 @@ public class MultimediaUtils {
                     "-i", audioPath,
                     "-c:v", "copy",
                     "-c:a", "aac",
-                    "-strict", "experimental",
+                    "-b:a", "192k",
+                    "-shortest",
                     "-y",
                     outputPath
             );
@@ -428,7 +530,9 @@ public class MultimediaUtils {
      * 视频拼接
      *
      * <p>将多个视频片段拼接成一个完整的视频。</p>
-     * ffmpeg -f concat -safe 0 -i list.txt -c:v copy -c:a copy -y output_concat.mp4
+     * 使用FFmpeg的concat demuxer方式，先生成列表文件再执行拼接。
+     * 如果流复制失败（编码参数不一致），则回退到重新编码方式。
+     *
      * @param videoPaths 视频片段路径列表
      * @return 拼接后的视频文件路径
      */
@@ -445,6 +549,10 @@ public class MultimediaUtils {
             return videoPaths[0];
         }
 
+        if (!isFfmpegAvailable()) {
+            throw new RuntimeException("FFmpeg 未安装或不可用");
+        }
+
         for (int i = 0; i < videoPaths.length; i++) {
             String path = videoPaths[i];
             if (path == null || path.isEmpty()) {
@@ -456,6 +564,9 @@ public class MultimediaUtils {
                 log.error("第{}个视频片段不存在: {}", i + 1, path);
                 throw new RuntimeException("视频片段不存在: " + path);
             }
+            if (!path.toLowerCase().endsWith(".mp4")) {
+                log.warn("第{}个视频片段格式不是 MP4，可能影响拼接: {}", i + 1, path);
+            }
         }
 
         String firstVideoPath = videoPaths[0];
@@ -466,49 +577,22 @@ public class MultimediaUtils {
             listFile = File.createTempFile("ffmpeg_concat_", ".txt");
             log.info("创建临时列表文件: {}", listFile.getAbsolutePath());
 
-            try (java.io.PrintWriter writer = new java.io.PrintWriter(listFile)) {
+            try (java.io.PrintWriter writer = new java.io.PrintWriter(listFile, StandardCharsets.UTF_8.name())) {
                 for (String videoPath : videoPaths) {
-                    writer.println("file '" + videoPath + "'");
+                    String escapedPath = videoPath.replace("\\", "\\\\");
+                    writer.println("file '" + escapedPath + "'");
                 }
             }
             log.info("临时列表文件写入完成，共{}个视频片段", videoPaths.length);
 
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                    "ffmpeg",
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", listFile.getAbsolutePath(),
-                    "-c:v", "copy",
-                    "-c:a", "copy",
-                    "-y",
-                    outputPath
-            );
-
-            processBuilder.redirectErrorStream(true);
-            Process process = processBuilder.start();
-
-            StringBuilder output = new StringBuilder();
-
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
+            boolean success = executeConcatCommand(listFile.getAbsolutePath(), outputPath, true);
+            if (!success) {
+                log.warn("流复制模式拼接失败，尝试重新编码方式");
+                success = executeConcatCommand(listFile.getAbsolutePath(), outputPath, false);
             }
 
-            boolean completed = process.waitFor(15, java.util.concurrent.TimeUnit.MINUTES);
-            if (!completed) {
-                log.error("FFmpeg处理超时，强制终止进程");
-                process.destroyForcibly();
-                throw new RuntimeException("FFmpeg处理超时");
-            }
-
-            int exitCode = process.exitValue();
-            if (exitCode != 0) {
-                log.error("FFmpeg执行失败，退出码: {}, 输出信息: {}", exitCode, output);
-                throw new RuntimeException("FFmpeg执行失败: " + output);
+            if (!success) {
+                throw new RuntimeException("视频拼接失败");
             }
 
             log.info("视频拼接完成，输出路径: {}", outputPath);
@@ -529,17 +613,95 @@ public class MultimediaUtils {
         }
     }
 
+    private static boolean executeConcatCommand(String listFilePath, String outputPath, boolean streamCopy) throws java.io.IOException, InterruptedException {
+        ProcessBuilder processBuilder;
+        if (streamCopy) {
+            processBuilder = new ProcessBuilder(
+                    "ffmpeg",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", listFilePath,
+                    "-c:v", "copy",
+                    "-c:a", "copy",
+                    "-y",
+                    outputPath
+            );
+            log.info("使用流复制模式执行视频拼接");
+        } else {
+            processBuilder = new ProcessBuilder(
+                    "ffmpeg",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", listFilePath,
+                    "-c:v", "libx264",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-y",
+                    outputPath
+            );
+            log.info("使用重新编码模式执行视频拼接");
+        }
+
+        processBuilder.redirectErrorStream(true);
+        Process process = processBuilder.start();
+
+        StringBuilder output = new StringBuilder();
+
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream()))) {
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+        }
+
+        boolean completed = process.waitFor(15, java.util.concurrent.TimeUnit.MINUTES);
+        if (!completed) {
+            log.error("FFmpeg处理超时，强制终止进程");
+            process.destroyForcibly();
+            return false;
+        }
+
+        int exitCode = process.exitValue();
+        if (exitCode != 0) {
+            log.error("FFmpeg执行失败，退出码: {}, 输出信息: {}", exitCode, output);
+            return false;
+        }
+
+        return true;
+    }
+
     /**
      * 字幕生成
-     * 输入视频 → FFmpeg提取音频 → 临时WAV文件 → Whisper生成字幕 → 返回SRT内容
-     * <p>从视频中提取音频并生成字幕。</p>
-     * 使用whisper生成字幕文件
-     * @param videoPath 视频文件路径
-     * @return 字幕内容（SRT格式）
+     * <p>从视频文件中自动识别语音内容并生成SRT格式字幕。</p>
+     * 
+     * <h3>处理流程：</h3>
+     * <pre>
+     * 1. 输入验证：检查视频路径、文件存在性、FFmpeg和Whisper可用性
+     * 2. 音频提取：使用FFmpeg从视频中提取音频，转换为WAV格式（16kHz, 单声道, PCM编码）
+     * 3. 语音识别：调用Whisper CLI对提取的音频进行语音识别，生成SRT字幕文件
+     * 4. 结果读取：读取Whisper生成的SRT文件内容并返回
+     * 5. 资源清理：在finally块中删除临时音频文件和生成的SRT文件
+     * </pre>
+     * 
+     * <h3>关键技术说明：</h3>
+     * <ul>
+     *   <li>音频格式转换：将视频中的音频提取为16kHz采样率、单声道、PCM_S16LE编码的WAV文件，这是Whisper推荐的输入格式</li>
+     *   <li>SRT文件命名：Whisper根据输入音频文件名生成SRT文件（如 audio_12345.wav → audio_12345.srt），而非根据视频文件名</li>
+     *   <li>超时控制：音频提取超时60秒，Whisper识别超时10分钟（考虑到长视频识别耗时）</li>
+     *   <li>异常处理：任何步骤失败都会抛出RuntimeException，并在finally块中确保临时文件被清理</li>
+     * </ul>
+     * 
+     * @param videoPath 视频文件路径（支持MP4等常见视频格式）
+     * @return 字幕内容（标准SRT格式字符串，包含时间戳和文本内容）
+     * @throws IllegalArgumentException 当视频路径为空时抛出
+     * @throws RuntimeException 当视频文件不存在、FFmpeg/Whisper不可用、处理超时或失败时抛出
      */
     public static String generateSubtitles(String videoPath) {
-        log.info("执行字幕生成，视频路径: {}", videoPath);
+        log.info("开始执行字幕生成，视频路径: {}", videoPath);
 
+        // ========== 输入验证阶段 ==========
         if (videoPath == null || videoPath.isEmpty()) {
             log.error("视频路径为空");
             throw new IllegalArgumentException("视频路径不能为空");
@@ -551,12 +713,41 @@ public class MultimediaUtils {
             throw new RuntimeException("视频文件不存在: " + videoPath);
         }
 
-        File tempAudioFile = null;
+        // 检查FFmpeg是否可用（用于提取音频）
+        if (!isFfmpegAvailable()) {
+            throw new RuntimeException("FFmpeg 未安装或不可用");
+        }
+
+        // 检查Whisper是否可用（用于语音识别）
+        if (!isWhisperAvailable()) {
+            throw new RuntimeException("Whisper 未安装或不可用");
+        }
+
+        // 获取输出目录，Whisper生成的SRT文件将保存在此目录
+        String outputDir = videoFile.getParent();
+        if (outputDir == null) {
+            outputDir = System.getProperty("java.io.tmpdir");
+            log.warn("视频文件无父目录，使用系统临时目录: {}", outputDir);
+        }
+
+        // 声明需要在finally块中清理的资源
+        File tempAudioFile = null;      // FFmpeg提取的临时WAV音频文件
+        File generatedSrtFile = null;    // Whisper生成的SRT字幕文件
 
         try {
+            // ========== 步骤1：从视频中提取音频 ==========
+            // 创建临时WAV文件，用于存放提取的音频
             tempAudioFile = File.createTempFile("audio_", ".wav");
             log.info("创建临时音频文件: {}", tempAudioFile.getAbsolutePath());
 
+            // FFmpeg命令参数说明：
+            // -i: 输入文件
+            // -vn: 禁用视频流（只提取音频）
+            // -acodec pcm_s16le: 使用PCM 16位小端编码（Whisper推荐格式）
+            // -ar 16000: 设置采样率为16kHz（Whisper推荐采样率）
+            // -ac 1: 设置为单声道
+            // -f wav: 指定输出格式为WAV
+            // -y: 覆盖已存在的输出文件
             ProcessBuilder extractBuilder = new ProcessBuilder(
                     "ffmpeg",
                     "-i", videoPath,
@@ -569,9 +760,11 @@ public class MultimediaUtils {
                     tempAudioFile.getAbsolutePath()
             );
 
+            // 将标准错误流重定向到标准输出流，统一读取
             extractBuilder.redirectErrorStream(true);
             Process extractProcess = extractBuilder.start();
 
+            // 读取FFmpeg的输出日志
             StringBuilder extractOutput = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(extractProcess.getInputStream()))) {
@@ -581,6 +774,7 @@ public class MultimediaUtils {
                 }
             }
 
+            // 等待FFmpeg完成，设置60秒超时
             boolean extractCompleted = extractProcess.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
             if (!extractCompleted) {
                 log.error("FFmpeg提取音频超时，强制终止进程");
@@ -588,17 +782,23 @@ public class MultimediaUtils {
                 throw new RuntimeException("FFmpeg提取音频超时");
             }
 
+            // 检查FFmpeg退出码，非0表示失败
             int extractExitCode = extractProcess.exitValue();
             if (extractExitCode != 0) {
-                log.error("FFmpeg提取音频失败，退出码: {}, 输出: {}", extractExitCode, extractOutput);
+                log.error("FFmpeg提取音频失败，退出码: {}, 输出信息: {}", extractExitCode, extractOutput);
                 throw new RuntimeException("FFmpeg提取音频失败");
             }
 
-            log.info("音频提取完成，开始生成字幕");
+            log.info("音频提取完成，临时文件大小: {} bytes", tempAudioFile.length());
 
-            String outputDir = videoFile.getParent();
-            String outputPath = generateOutputPath(videoPath, "_subtitles");
+            // ========== 步骤2：使用Whisper进行语音识别 ==========
+            log.info("开始调用Whisper进行语音识别");
 
+            // Whisper CLI参数说明：
+            // --model base: 使用base模型（速度较快，准确率适中）
+            // --language Chinese: 指定语言为中文
+            // --output_format srt: 输出格式为SRT字幕
+            // --output_dir: 指定输出目录
             ProcessBuilder whisperBuilder = new ProcessBuilder(
                     "whisper",
                     tempAudioFile.getAbsolutePath(),
@@ -608,71 +808,125 @@ public class MultimediaUtils {
                     "--output_dir", outputDir
             );
 
+            // 将标准错误流重定向到标准输出流，统一读取
             whisperBuilder.redirectErrorStream(true);
             Process whisperProcess = whisperBuilder.start();
 
+            // 读取Whisper的输出日志
             StringBuilder whisperOutput = new StringBuilder();
-
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(whisperProcess.getInputStream()))) {
-
                 String line;
                 while ((line = reader.readLine()) != null) {
                     whisperOutput.append(line).append("\n");
                 }
             }
 
-            boolean completed = whisperProcess.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
+            // 等待Whisper完成，设置10分钟超时（语音识别耗时较长）
+            boolean completed = whisperProcess.waitFor(10, java.util.concurrent.TimeUnit.MINUTES);
             if (!completed) {
                 log.error("Whisper处理超时，强制终止进程");
                 whisperProcess.destroyForcibly();
                 throw new RuntimeException("Whisper处理超时");
             }
 
+            // 检查Whisper退出码，非0表示失败
             int exitCode = whisperProcess.exitValue();
             if (exitCode != 0) {
-                log.error("Whisper执行失败，退出码: {}, 输出: {}", exitCode, whisperOutput);
+                log.error("Whisper执行失败，退出码: {}, 输出信息: {}", exitCode, whisperOutput);
                 throw new RuntimeException("Whisper执行失败: " + whisperOutput);
             }
 
-            String srtPath = outputPath + ".srt";
-            File srtFile = new File(srtPath);
-            if (srtFile.exists()) {
-                String srtContent = new String(Files.readAllBytes(srtFile.toPath()), StandardCharsets.UTF_8);
-                log.info("字幕生成完成，SRT文件路径: {}", srtPath);
+            // ========== 步骤3：读取生成的SRT文件 ==========
+            // 关键注意点：Whisper生成的SRT文件名基于输入音频文件名，而非视频文件名
+            // 例如：输入 audio_12345.wav → 生成 audio_12345.srt
+            String audioFileName = tempAudioFile.getName();
+            String srtFileName = audioFileName.substring(0, audioFileName.lastIndexOf('.')) + ".srt";
+            String srtPath = outputDir + File.separator + srtFileName;
+            generatedSrtFile = new File(srtPath);
+
+            // 验证SRT文件是否生成成功
+            if (generatedSrtFile.exists()) {
+                String srtContent = new String(Files.readAllBytes(generatedSrtFile.toPath()), StandardCharsets.UTF_8);
+                log.info("字幕生成完成，SRT文件路径: {}, 内容长度: {} 字符", srtPath, srtContent.length());
                 return srtContent;
             } else {
-                log.error("Whisper执行成功但未生成SRT文件");
+                log.error("Whisper执行成功但未生成SRT文件，期望路径: {}", srtPath);
                 throw new RuntimeException("Whisper未生成字幕文件");
             }
 
         } catch (java.io.IOException e) {
-            log.error("执行Whisper命令失败: {}", e.getMessage());
+            // IO异常：文件创建失败、命令执行失败等
+            log.error("执行字幕生成命令失败: {}", e.getMessage(), e);
             throw new RuntimeException("字幕生成失败: " + e.getMessage(), e);
         } catch (InterruptedException e) {
+            // 线程中断异常：处理过程被外部中断
             log.warn("字幕生成被中断");
             Thread.currentThread().interrupt();
             throw new RuntimeException("字幕生成被中断", e);
         } finally {
+            // ========== 资源清理阶段 ==========
+            // 删除临时音频文件
             if (tempAudioFile != null && tempAudioFile.exists()) {
-                tempAudioFile.delete();
-                log.debug("删除临时音频文件");
+                boolean deleted = tempAudioFile.delete();
+                log.debug("删除临时音频文件: path={}, 结果={}", tempAudioFile.getAbsolutePath(), deleted);
+            }
+            // 删除Whisper生成的SRT文件（已读取内容，不再需要）
+            if (generatedSrtFile != null && generatedSrtFile.exists()) {
+                boolean deleted = generatedSrtFile.delete();
+                log.debug("删除生成的SRT文件: path={}, 结果={}", generatedSrtFile.getAbsolutePath(), deleted);
             }
         }
     }
 
     /**
+     * 检查Whisper语音识别工具是否可用
+     * <p>通过执行 whisper --help 命令来验证Whisper是否已安装并可在系统路径中找到。</p>
+     * 
+     * @return true表示Whisper可用，false表示不可用
+     */
+    private static boolean isWhisperAvailable() {
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder("whisper", "--help");
+            Process process = processBuilder.start();
+            // 设置5秒超时，避免长时间等待
+            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            return process.exitValue() == 0;
+        } catch (Exception e) {
+            log.warn("Whisper 不可用: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * 字幕烧录
-     *
-     * <p>将字幕烧录到视频中。</p>
-     *
-     * @param videoPath 视频文件路径
-     * @param subtitles 字幕内容
+     * <p>将字幕内容烧录（硬编码）到视频中，生成带字幕的视频文件。</p>
+     * 
+     * <h3>处理流程：</h3>
+     * <pre>
+     * 1. 输入验证：检查视频路径、文件存在性、FFmpeg可用性
+     * 2. 字幕文件创建：将字幕内容字符串写入临时SRT文件
+     * 3. 字幕烧录：使用FFmpeg的subtitles滤镜将字幕渲染到视频帧
+     * 4. 资源清理：删除临时字幕文件
+     * </pre>
+     * 
+     * <h3>关键技术说明：</h3>
+     * <ul>
+     *   <li>硬编码方式：字幕被直接渲染到视频画面上，无法关闭或提取</li>
+     *   <li>视频重编码：使用-vf滤镜需要对视频进行重新编码，处理时间较长</li>
+     *   <li>路径转义：字幕文件路径中的特殊字符（如冒号、反斜杠）需要转义</li>
+     * </ul>
+     * 
+     * @param videoPath 视频文件路径（支持MP4等常见视频格式）
+     * @param subtitles 字幕内容字符串（标准SRT格式）
      * @return 烧录字幕后的视频文件路径
+     * @throws IllegalArgumentException 当视频路径或字幕内容为空时抛出
+     * @throws RuntimeException 当视频文件不存在、FFmpeg不可用、处理超时或失败时抛出
      */
     public static String burnSubtitles(String videoPath, String subtitles) {
         log.info("执行字幕烧录，视频路径: {}", videoPath);
 
+        // ========== 输入验证阶段 ==========
         if (videoPath == null || videoPath.isEmpty()) {
             log.error("视频路径为空");
             throw new IllegalArgumentException("视频路径不能为空");
@@ -689,21 +943,44 @@ public class MultimediaUtils {
             throw new RuntimeException("视频文件不存在: " + videoPath);
         }
 
+        if (!videoPath.toLowerCase().endsWith(".mp4")) {
+            log.warn("视频文件格式不是 MP4，可能影响处理: {}", videoPath);
+        }
+
+        // 检查FFmpeg是否可用
+        if (!isFfmpegAvailable()) {
+            throw new RuntimeException("FFmpeg 未安装或不可用");
+        }
+
         String outputPath = generateOutputPath(videoPath, "_with_subtitles");
         File srtFile = null;
 
         try {
+            // ========== 步骤1：创建临时字幕文件 ==========
+            // 将字幕内容字符串写入临时SRT文件
             srtFile = File.createTempFile("subtitles_", ".srt");
             log.info("创建临时字幕文件: {}", srtFile.getAbsolutePath());
 
             Files.write(srtFile.toPath(), subtitles.getBytes(StandardCharsets.UTF_8));
 
+            // ========== 步骤2：执行FFmpeg字幕烧录 ==========
+            // FFmpeg命令参数说明：
+            // -i: 输入视频文件
+            // -vf subtitles=: 使用subtitles滤镜加载字幕文件
+            // -c:v libx264: 视频编码器（使用-vf滤镜需要重新编码）
+            // -preset medium: 编码速度与质量的平衡
+            // -crf 23: 恒定质量因子（数值越小质量越高）
+            // -c:a copy: 音频流直接复制，不重新编码
+            // -y: 覆盖已存在的输出文件
             String filterComplex = "subtitles=" + escapePath(srtFile.getAbsolutePath());
 
             ProcessBuilder processBuilder = new ProcessBuilder(
                     "ffmpeg",
                     "-i", videoPath,
                     "-vf", filterComplex,
+                    "-c:v", "libx264",
+                    "-preset", "medium",
+                    "-crf", "23",
                     "-c:a", "copy",
                     "-y",
                     outputPath
@@ -723,6 +1000,7 @@ public class MultimediaUtils {
                 }
             }
 
+            // 设置15分钟超时（字幕烧录需要重新编码视频，耗时较长）
             boolean completed = process.waitFor(15, java.util.concurrent.TimeUnit.MINUTES);
             if (!completed) {
                 log.error("FFmpeg处理超时，强制终止进程");
@@ -736,7 +1014,14 @@ public class MultimediaUtils {
                 throw new RuntimeException("FFmpeg执行失败: " + output);
             }
 
-            log.info("字幕烧录完成，输出路径: {}", outputPath);
+            // 验证输出文件是否生成成功
+            File outputFile = new File(outputPath);
+            if (!outputFile.exists()) {
+                log.error("字幕烧录完成但输出文件不存在: {}", outputPath);
+                throw new RuntimeException("字幕烧录失败：输出文件未生成");
+            }
+
+            log.info("字幕烧录完成，输出路径: {}, 文件大小: {} bytes", outputPath, outputFile.length());
             return outputPath;
 
         } catch (java.io.IOException e) {
@@ -747,9 +1032,11 @@ public class MultimediaUtils {
             Thread.currentThread().interrupt();
             throw new RuntimeException("FFmpeg处理被中断", e);
         } finally {
+            // ========== 资源清理阶段 ==========
+            // 删除临时字幕文件
             if (srtFile != null && srtFile.exists()) {
                 boolean deleted = srtFile.delete();
-                log.debug("删除临时字幕文件: path={}, result={}", srtFile.getAbsolutePath(), deleted);
+                log.debug("删除临时字幕文件: path={}, 结果={}", srtFile.getAbsolutePath(), deleted);
             }
         }
     }
@@ -772,5 +1059,47 @@ public class MultimediaUtils {
                    .replace(":", "\\:")
                    .replace("'", "\\'")
                    .replace("\"", "\\\"");
+    }
+    
+    /**
+     * 将文件复制到安全位置
+     * <p>用于处理ComfyUI临时文件，避免被ComfyUI自动清理。</p>
+     * 
+     * @param sourcePath 源文件路径
+     * @return 复制后的安全路径
+     * @throws RuntimeException 当文件复制失败时抛出
+     */
+    private static String copyToSafeLocation(String sourcePath) {
+        try {
+            File sourceFile = new File(sourcePath);
+            if (!sourceFile.exists()) {
+                log.error("源文件不存在: {}", sourcePath);
+                throw new RuntimeException("源文件不存在: " + sourcePath);
+            }
+            
+            // 获取文件扩展名
+            String extension = "";
+            int dotIndex = sourceFile.getName().lastIndexOf('.');
+            if (dotIndex > 0) {
+                extension = sourceFile.getName().substring(dotIndex);
+            }
+            
+            // 生成新文件名：使用时间戳避免冲突
+            String newFileName = "audio_" + System.currentTimeMillis() + extension;
+            
+            // 目标路径：与源文件同目录，但文件名不同
+            String targetPath = sourceFile.getParent() + File.separator + newFileName;
+            File targetFile = new File(targetPath);
+            
+            // 复制文件
+            java.nio.file.Files.copy(sourceFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            
+            log.info("文件已复制到安全位置: {} -> {}", sourcePath, targetPath);
+            return targetPath;
+            
+        } catch (java.io.IOException e) {
+            log.error("文件复制失败: {}", sourcePath, e);
+            throw new RuntimeException("文件复制失败: " + e.getMessage(), e);
+        }
     }
 }

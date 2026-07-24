@@ -202,12 +202,6 @@ public class TaskService {
             log.info("上传文件已保存: {}", filePath);
         }
 
-        // 存入数据库的任务描述只保留前缀
-        String fullPrompt = description;
-        if (description != null && description.length() > 15) {
-            description = description.substring(0, 15);
-        }
-
         Task task = Task.builder()
                 .taskId(taskId)
                 .userId(userId)
@@ -221,8 +215,6 @@ public class TaskService {
                 .submitTime(LocalDateTime.now())
                 .build();
 
-        // 完整提示词存内存，不入库
-        task.setPrompt(fullPrompt);
         task.setIsPolish(isPolish != null ? isPolish : true);
 
         // 播音员和情绪存内存，不入库
@@ -230,6 +222,7 @@ public class TaskService {
         task.setEmotion(emotion);
 
         taskRepository.save(task);
+        
         // 提交的多媒体生成任务会保存在队列中，每个时刻只能有一个任务在运行
         taskCache.put(taskId, task);
         boolean offered = taskQueue.offer(task);
@@ -245,14 +238,17 @@ public class TaskService {
     private void executeTask(Task task) {
         log.info("========== 开始执行任务 ==========");
         log.info("任务ID: {}, 类型: {}", task.getTaskId(), task.getType());
-
+        
+        String narration = task.getDescription();
         task.setStatus("执行中");
         task.setProgress(0);
         updateTask(task);
 
-        // 执行科普视频生成任务
+        // 科普视频生成任务需要在单独的线程中执行，避免占用唯一的ComfyUI工作线程
+        // 父任务在单独线程中编排，子任务提交到队列由工作线程处理
         if (task.getType() == TaskType.SCIENCE_VIDEO) {
-            executeScienceVideoTask(task);
+            log.info("科普视频生成解说词:" + narration);
+            executeScienceVideoTaskAsync(task, narration);
             return;
         }
 
@@ -423,14 +419,86 @@ public class TaskService {
 
         String[] outputFields = {"images", "gifs", "videos", "audios", "audio", "files"};
 
+        // 优先查找正式输出文件（type: "output"），避免选择临时文件（type: "temp"）
+        String preferredPath = findOutputByType(outputs, outputFields, "output");
+        if (preferredPath != null) {
+            return preferredPath;
+        }
+
+        // 如果没有找到正式输出，再查找临时文件
+        String tempPath = findOutputByType(outputs, outputFields, "temp");
+        if (tempPath != null) {
+            log.warn("未找到正式输出文件，使用临时文件: {}", tempPath);
+            return tempPath;
+        }
+
+        log.warn("未找到输出文件: {}", outputs);
+        return null;
+    }
+    
+    /**
+     * 按类型查找输出文件路径
+     * <p>从ComfyUI返回的outputs节点中，根据指定的类型（output/temp）查找输出文件路径。</p>
+     * 
+     * <h3>背景说明：</h3>
+     * <p>ComfyUI工作流执行完成后，可能返回多个输出文件：</p>
+     * <ul>
+     *   <li><b>正式输出文件</b>（type: "output"）：由SaveImage/SaveAudio等节点生成，存储在output目录下的子目录中，不会被自动清理</li>
+     *   <li><b>临时输出文件</b>（type: "temp"）：由PreviewImage/PreviewAudio等节点生成，存储在output根目录下，会被ComfyUI自动清理</li>
+     * </ul>
+     * 
+     * <h3>查找逻辑：</h3>
+     * <pre>
+     * 1. 遍历outputs节点中的所有输出项
+     * 2. 对每个输出项，检查指定的字段（images/gifs/videos/audios/audio/files）
+     * 3. 如果字段存在且为数组，取第一个元素
+     * 4. 检查元素的type字段是否与指定类型匹配
+     * 5. 如果匹配，返回完整的文件路径（包含subfolder）
+     * </pre>
+     * 
+     * <h3>使用示例：</h3>
+     * <pre>
+     * // 优先查找正式输出文件
+     * String path = findOutputByType(outputs, outputFields, "output");
+     * 
+     * // 如果没有正式输出，查找临时文件作为备选
+     * if (path == null) {
+     *     path = findOutputByType(outputs, outputFields, "temp");
+     * }
+     * </pre>
+     * 
+     * @param outputs ComfyUI返回的outputs节点
+     * @param outputFields 输出字段列表，按优先级顺序排列：{"images", "gifs", "videos", "audios", "audio", "files"}
+     * @param type 类型筛选条件，"output"表示正式输出，"temp"表示临时输出，空字符串表示不筛选
+     * @return 文件路径（包含subfolder），如果未找到匹配的文件返回null
+     */
+    private String findOutputByType(JsonNode outputs, String[] outputFields, String type) {
+        // 遍历outputs节点中的所有输出项
         java.util.Iterator<JsonNode> iterator = outputs.elements();
         while (iterator.hasNext()) {
             JsonNode node = iterator.next();
+            
+            // 按优先级检查各个输出字段
             for (String field : outputFields) {
                 JsonNode fieldNode = node.get(field);
+                
+                // 检查字段是否存在且为非空数组
                 if (fieldNode != null && fieldNode.isArray() && fieldNode.size() > 0) {
                     JsonNode firstItem = fieldNode.get(0);
+                    
+                    // 检查是否包含filename字段（必需）
                     if (firstItem.has("filename")) {
+                        // 获取type字段进行类型筛选
+                        String itemType = firstItem.has("type") ? firstItem.get("type").asText() : "";
+                        
+                        // 如果指定了类型筛选条件：
+                        // - 如果输出项有type字段且不匹配，跳过
+                        // - 如果输出项没有type字段（空字符串），视为正式输出（兼容旧版ComfyUI或没有Preview节点的工作流）
+                        if (!type.isEmpty() && !itemType.isEmpty() && !type.equals(itemType)) {
+                            continue;
+                        }
+                        
+                        // 拼接完整路径：subfolder + filename
                         String filename = firstItem.get("filename").asText();
                         String subfolder = firstItem.has("subfolder") ? firstItem.get("subfolder").asText() : "";
                         if (!subfolder.isEmpty()) {
@@ -441,7 +509,6 @@ public class TaskService {
                 }
             }
         }
-        log.warn("未找到输出文件: {}", outputs);
         return null;
     }
 
@@ -464,15 +531,14 @@ public class TaskService {
         TaskType type = task.getType();
 
         String description = task.getDescription();
-        String prompt = task.getPrompt();
-        String promptToUse = (prompt != null && !prompt.isEmpty()) ? prompt : description;
+        String promptToUse = description;
         String fileName = null;
         if (task.getFilePath() != null) {
             fileName = new File(task.getFilePath()).getName();
         }
 
-        log.debug("填充工作流参数: taskId={}, type={}, hasDescription={}, hasPrompt={}, hasFile={}, isPolish={}",
-                task.getTaskId(), type, description != null, prompt != null, fileName != null, isPolish);
+        log.debug("填充工作流参数: taskId={}, type={}, hasDescription={}, hasFile={}, isPolish={}",
+                task.getTaskId(), type, description != null, fileName != null, isPolish);
 
         switch (type) {
             case TEXT_TO_IMAGE:
@@ -643,6 +709,10 @@ public class TaskService {
                 if (promptToUse != null) {
                     String speaker = task.getSpeaker() != null ? task.getSpeaker() : "Vivian";
                     String emotion = task.getEmotion() != null ? task.getEmotion() : "平静";
+                    
+                    // 标准化speaker名称，解决大小写不匹配问题
+                    speaker = normalizeSpeaker(speaker);
+                    
                     // 替换描述文字
                     result = result.replace("write describe text here", promptToUse);
                     log.info("已替换描述文字");
@@ -922,9 +992,9 @@ public class TaskService {
      * @return 分页响应
      */
     public PageResponse<TaskResponse> getTasksByUserPaged(String userId, int page, int size, 
-                                                          String status, String sort, String keyword) {
-        log.debug("分页查询用户任务列表: userId={}, page={}, size={}, status={}, sort={}, keyword={}", 
-                  userId, page, size, status, sort, keyword);
+                                                          String status, String sort, String keyword, boolean onlyParent) {
+        log.debug("分页查询用户任务列表: userId={}, page={}, size={}, status={}, sort={}, keyword={}, onlyParent={}", 
+                  userId, page, size, status, sort, keyword, onlyParent);
 
         // 构建排序
         Sort.Direction direction = "oldest".equals(sort) ? Sort.Direction.ASC : Sort.Direction.DESC;
@@ -938,14 +1008,27 @@ public class TaskService {
         boolean hasKeyword = keyword != null && !keyword.trim().isEmpty();
         boolean hasStatusFilter = status != null && !"all".equals(status);
 
-        if (hasStatusFilter && hasKeyword) {
-            taskPage = taskRepository.searchByUserIdAndStatusAndKeyword(userId, status, keyword.trim(), pageable);
-        } else if (hasStatusFilter) {
-            taskPage = taskRepository.findByUserIdAndStatus(userId, status, pageable);
-        } else if (hasKeyword) {
-            taskPage = taskRepository.searchByUserIdAndKeyword(userId, keyword.trim(), pageable);
+        if (onlyParent) {
+            // 只查询父任务（fatherTaskId为空）
+            if (hasStatusFilter && hasKeyword) {
+                taskPage = taskRepository.searchParentByUserIdAndStatusAndKeyword(userId, status, keyword.trim(), pageable);
+            } else if (hasStatusFilter) {
+                taskPage = taskRepository.findByUserIdAndStatusAndFatherTaskIdIsNull(userId, status, pageable);
+            } else if (hasKeyword) {
+                taskPage = taskRepository.searchParentByUserIdAndKeyword(userId, keyword.trim(), pageable);
+            } else {
+                taskPage = taskRepository.findByUserIdAndFatherTaskIdIsNull(userId, pageable);
+            }
         } else {
-            taskPage = taskRepository.findByUserId(userId, pageable);
+            if (hasStatusFilter && hasKeyword) {
+                taskPage = taskRepository.searchByUserIdAndStatusAndKeyword(userId, status, keyword.trim(), pageable);
+            } else if (hasStatusFilter) {
+                taskPage = taskRepository.findByUserIdAndStatus(userId, status, pageable);
+            } else if (hasKeyword) {
+                taskPage = taskRepository.searchByUserIdAndKeyword(userId, keyword.trim(), pageable);
+            } else {
+                taskPage = taskRepository.findByUserId(userId, pageable);
+            }
         }
 
         // 获取统计信息
@@ -966,6 +1049,23 @@ public class TaskService {
                 .hasPrevious(taskPage.hasPrevious())
                 .statistics(statistics)
                 .build();
+    }
+
+    /**
+     * 批量获取父任务的子任务
+     * 
+     * @param userId 用户ID
+     * @param parentIds 父任务ID列表
+     * @return 子任务列表
+     */
+    public List<TaskResponse> getChildTasksByParentIds(String userId, List<String> parentIds) {
+        log.debug("批量获取子任务: userId={}, parentIds={}", userId, parentIds);
+        
+        List<Task> tasks = taskRepository.findByUserIdAndFatherTaskIdIn(userId, parentIds);
+        
+        return tasks.stream()
+                .map(this::convertToResponse)
+                .collect(Collectors.toList());
     }
 
     /**
@@ -1040,104 +1140,171 @@ public class TaskService {
         }
     }
 
-    // 执行科普视频生成任务
-    private void executeScienceVideoTask(Task task) {
+    /**
+     * 执行科普视频生成任务
+     * <p>完整的科普视频生成流程，包含18个步骤：</p>
+     * <pre>
+     * 1. 场景设计 - 根据解说词生成多个场景
+     * 2. 分镜设计 - 为每个场景生成多个镜头
+     * 3. 解说音频提示词生成 - 为每个镜头生成配音文本
+     * 4. 遍历场景和镜头
+     * 5. 分镜图片提示词生成 - 为每个镜头生成图片提示词
+     * 6. 生成关键帧图片 - 调用文生图生成图片
+     * 7. 图片质量检测 - AI检测图片质量，不通过则重试（最多5次）
+     * 8. 视频提示词生成 - 为每个镜头生成视频提示词
+     * 9. 关键帧生成视频 - 调用图生视频生成视频
+     * 10. 视频质量检测 - AI检测视频质量，不通过则重试（最多5次）
+     * 11. 视频背景音去除 - 使用FFmpeg去除视频中的原始音频
+     * 12. 生成镜头对应的音频 - 调用文生语音生成配音
+     * 13. 音视频整合 - 将配音与视频合并
+     * 14. 循环处理下一个镜头
+     * 15. 视频拼接 - 将所有镜头视频拼接成完整视频
+     * 16. 字幕生成 - 使用Whisper生成字幕
+     * 17. 字幕烧录 - 将字幕硬编码到视频中
+     * 18. 完成 - 返回最终视频路径
+     * </pre>
+     * 
+     * @param task 科普视频生成任务实体
+     */
+    private void executeScienceVideoTask(Task task, String narration, boolean quality) {
         String fatherTaskId = task.getTaskId();
-        String narration = task.getPrompt() != null ? task.getPrompt() : task.getDescription();
         String userId = task.getUserId();
 
         log.info("========== 开始执行科普视频生成任务 ==========");
         log.info("父任务ID: {}, 用户ID: {}", fatherTaskId, userId);
 
         try {
+            // ========== 步骤1: 场景设计 ==========
             log.info("步骤1: 场景设计");
             com.example.aiworkshop.dto.response.SceneDesignResponse sceneResponse = videoGenerateTools.sceneDesign(narration);
             log.info("场景设计完成，场景数: {}", sceneResponse != null && sceneResponse.getScenes() != null ? sceneResponse.getScenes().size() : 0);
 
+            // ========== 步骤2: 分镜设计 ==========
             log.info("步骤2: 分镜设计");
             com.example.aiworkshop.dto.response.StoryboardDesignResponse storyboardResponse = videoGenerateTools.storyboardDesign(narration, sceneResponse);
             log.info("分镜设计完成");
 
+            // ========== 步骤3: 解说音频提示词生成 ==========
             log.info("步骤3: 解说音频提示词生成");
             com.example.aiworkshop.dto.response.NarrationAudioResponse narrationAudioResponse = videoGenerateTools.narrationAudioDesign(narration, storyboardResponse);
             log.info("解说音频提示词生成完成");
 
             java.util.List<String> videoPaths = new java.util.ArrayList<>();
 
+            // ========== 步骤4: 遍历场景和镜头 ==========
             if (storyboardResponse != null && storyboardResponse.getStoryboard() != null) {
                 int totalScenes = storyboardResponse.getStoryboard().size();
                 int processedScenes = 0;
+
                 // 对每一个场景进行遍历
                 for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.StoryboardScene scene : storyboardResponse.getStoryboard()) {
                     processedScenes++;
                     log.info("========== 处理场景 {}/{} ==========", processedScenes, totalScenes);
+
                     if (scene.getShots() != null) {
                         // 对每一个镜头进行遍历
                         for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.Shot shot : scene.getShots()) {
                             log.info("处理分镜: sceneId={}, shotId={}", scene.getSceneId(), shot.getShotId());
 
                             String imagePath = null;
+                            String audioPath = null;
+                            Integer audioDuration = null;
                             com.example.aiworkshop.dto.response.KeyframeDesignResponse keyframeResponse = null;
                             int retryCount = 0;
-                            final int maxRetry = 5;
+                            final int maxRetry = 1;   // 当前只重试一次
 
                             String bestImagePath = null;
                             Integer bestScore = null;
                             com.example.aiworkshop.dto.response.ImageQualityDetectionResponse bestQualityResponse = null;
 
-                            // 关键帧图片生成
-                            while (retryCount < maxRetry) {
-                                if (retryCount == 0) {
-                                    // 根据镜头信息首次生成关键帧图片提示词
-                                    log.info("步骤5: 分镜图片提示词生成");
-                                    keyframeResponse = videoGenerateTools.keyframeDesign(narration, scene.getSceneId(), shot);
-                                } else {
-                                    log.info("步骤5: 使用改进建议更新提示词（重试第 {}/{} 次）", retryCount, maxRetry);
-                                }
-
-                                log.info("步骤6: 生成关键帧图片");
-                                String currentImagePath = multimediaUtils.generateImage(keyframeResponse, userId, fatherTaskId);
-                                log.info("关键帧图片生成成功: {}", currentImagePath);
-
-                                log.info("步骤7: 图片质量检测");
-                                com.example.aiworkshop.dto.response.ImageQualityDetectionResponse imageQuality = videoGenerateTools.imageQualityDetection(keyframeResponse, currentImagePath);
+                            // ========== 步骤5: 生成镜头对应的音频（提前到前面，以便获取音频时长） ==========
+                            com.example.aiworkshop.dto.response.NarrationAudioResponse.NarrationItem narrationItem = 
+                                narrationAudioResponse != null ? narrationAudioResponse.findBySceneIdAndShotId(scene.getSceneId(), shot.getShotId()) : null;
+                            if (narrationItem != null && narrationItem.getText() != null && !narrationItem.getText().isEmpty()) {
+                                log.info("步骤5: 生成镜头对应的音频");
+                                audioPath = multimediaUtils.generateSpeech(narrationItem, userId, fatherTaskId);
+                                log.info("音频生成成功: {}", audioPath);
                                 
-                                Integer currentScore = imageQuality.getTotalScore();
-                                log.info("图片质量检测得分: {}", currentScore);
-
-                                if (bestScore == null || (currentScore != null && currentScore > bestScore)) {
-                                    bestScore = currentScore;
-                                    bestImagePath = currentImagePath;
-                                    bestQualityResponse = imageQuality;
-                                }
-                                
-                                if (imageQuality.getPass() != null && imageQuality.getPass()) {
-                                    log.info("图片质量检测通过");
-                                    imagePath = currentImagePath;
-                                    break;
+                                // 获取音频时长，前后各加1秒冗余
+                                audioDuration = multimediaUtils.getAudioDuration(audioPath);
+                                if (audioDuration != null) {
+                                    audioDuration = audioDuration + 1; // 加1秒冗余
+                                    log.info("音频时长: {} 秒，视频生成时长: {} 秒", audioDuration - 1, audioDuration);
                                 } else {
-                                    log.warn("图片质量检测未通过，重试第 {}/{} 次", retryCount + 1, maxRetry);
-                                    // 如果图片质量档次较低，需要对图片提示词进行动态修改微调
-                                    if (imageQuality.getImprovementSuggestions() != null) {
-                                        com.example.aiworkshop.dto.response.KeyframeDesignResponse newKeyframeResponse = new com.example.aiworkshop.dto.response.KeyframeDesignResponse();
-                                        newKeyframeResponse.setChinese(imageQuality.getImprovementSuggestions().getChinese());
-                                        newKeyframeResponse.setEnglish(imageQuality.getImprovementSuggestions().getEnglish());
-                                        keyframeResponse = newKeyframeResponse;
-                                        log.info("已使用改进建议更新提示词");
+                                    log.warn("获取音频时长失败，使用预估时长");
+                                }
+                            } else {
+                                log.warn("未找到镜头对应的解说音频或音频内容为空，跳过音频生成: sceneId={}, shotId={}", scene.getSceneId(), shot.getShotId());
+                            }
+
+                            // ========== 步骤6-8: 关键帧图片生成与质量检测 ==========
+                            if (quality) {
+                                // 需要质量检测，带重试逻辑
+                                while (retryCount < maxRetry) {
+                                    if (retryCount == 0) {
+                                        // 根据镜头信息首次生成关键帧图片提示词
+                                        log.info("步骤6: 分镜图片提示词生成");
+                                        keyframeResponse = videoGenerateTools.keyframeDesign(narration, scene.getSceneId(), shot);
+                                    } else {
+                                        log.info("步骤6: 使用改进建议更新提示词（重试第 {}/{} 次）", retryCount, maxRetry);
+                                    }
+
+                                    log.info("步骤7: 生成关键帧图片");
+                                    String currentImagePath = multimediaUtils.generateImage(keyframeResponse, userId, fatherTaskId);
+                                    log.info("关键帧图片生成成功: {}", currentImagePath);
+
+                                    log.info("步骤8: 图片质量检测");
+                                    com.example.aiworkshop.dto.response.ImageQualityDetectionResponse imageQuality = videoGenerateTools.imageQualityDetection(keyframeResponse, currentImagePath);
+                                    
+                                    Integer currentScore = imageQuality.getTotalScore();
+                                    log.info("图片质量检测得分: {}", currentScore);
+
+                                    // 记录最佳结果
+                                    if (bestScore == null || (currentScore != null && currentScore > bestScore)) {
+                                        bestScore = currentScore;
+                                        bestImagePath = currentImagePath;
+                                        bestQualityResponse = imageQuality;
                                     }
                                     
-                                    retryCount++;
+                                    // 质量检测通过，退出重试循环
+                                    if (imageQuality.getPass() != null && imageQuality.getPass()) {
+                                        log.info("图片质量检测通过");
+                                        imagePath = currentImagePath;
+                                        break;
+                                    } else {
+                                        log.warn("图片质量检测未通过，重试第 {}/{} 次", retryCount + 1, maxRetry);
+                                        // 使用改进建议更新提示词
+                                        if (imageQuality.getImprovementSuggestions() != null) {
+                                            com.example.aiworkshop.dto.response.KeyframeDesignResponse newKeyframeResponse = new com.example.aiworkshop.dto.response.KeyframeDesignResponse();
+                                            newKeyframeResponse.setChinese(imageQuality.getImprovementSuggestions().getChinese());
+                                            newKeyframeResponse.setEnglish(imageQuality.getImprovementSuggestions().getEnglish());
+                                            keyframeResponse = newKeyframeResponse;
+                                            log.info("已使用改进建议更新提示词");
+                                        }
+                                        
+                                        retryCount++;
+                                    }
                                 }
+
+                                // 达到最大重试次数，使用得分最高的图片
+                                if (retryCount >= maxRetry) {
+                                    log.warn("图片质量检测达到最大重试次数，使用得分最高的图片，得分: {}", bestScore);
+                                    imagePath = bestImagePath;
+                                    if (imagePath == null) {
+                                        throw new RuntimeException("图片生成失败，场景: " + scene.getSceneId() + ", 分镜: " + shot.getShotId());
+                                    }
+                                }
+                            } else {
+                                // 不需要质量检测，直接生成一次
+                                log.info("步骤6: 分镜图片提示词生成（跳过质量检测）");
+                                keyframeResponse = videoGenerateTools.keyframeDesign(narration, scene.getSceneId(), shot);
+
+                                log.info("步骤7: 生成关键帧图片（跳过质量检测）");
+                                imagePath = multimediaUtils.generateImage(keyframeResponse, userId, fatherTaskId);
+                                log.info("关键帧图片生成成功: {}", imagePath);
                             }
 
-                            if (retryCount >= maxRetry) {
-                                log.warn("图片质量检测达到最大重试次数，使用得分最高的图片，得分: {}", bestScore);
-                                imagePath = bestImagePath;
-                                if (imagePath == null) {
-                                    throw new RuntimeException("图片生成失败，场景: " + scene.getSceneId() + ", 分镜: " + shot.getShotId());
-                                }
-                            }
-
+                            // ========== 步骤9-11: 视频生成与质量检测（使用音频时长） ==========
                             String videoWithAudioPath = null;
                             retryCount = 0;
 
@@ -1145,105 +1312,125 @@ public class TaskService {
                             Integer bestVideoScore = null;
                             com.example.aiworkshop.dto.response.VideoDesignResponse videoDesignResponse = null;
 
-                            // 视频生成
-                            while (retryCount < maxRetry) {
-                                if (retryCount == 0) {
-                                    // 根据关键帧提示词、镜头信息、图片信息首次生成视频生成提示词
-                                    log.info("步骤8: 视频提示词生成");
-                                    videoDesignResponse = videoGenerateTools.videoDesign(keyframeResponse, scene.getSceneId(), shot, imagePath);
-                                } else {
-                                    log.info("步骤8: 使用改进建议更新提示词（重试第 {}/{} 次）", retryCount, maxRetry);
-                                }
+                            // 确定视频生成时长：有音频时长则使用音频时长（加冗余），否则使用预估时长
+                            Integer videoDuration = audioDuration != null ? audioDuration : 
+                                                   (shot.getEstimatedDuration() != null ? shot.getEstimatedDuration() : 5);
 
-                                log.info("步骤9: 关键帧生成视频");
-                                String currentVideoPath = multimediaUtils.generateVideoWithAudio(videoDesignResponse, imagePath, userId, fatherTaskId);
-                                log.info("视频生成成功: {}", currentVideoPath);
-
-                                log.info("步骤10: 视频质量检测");
-                                com.example.aiworkshop.dto.response.VideoQualityDetectionResponse videoQuality = videoGenerateTools.videoQualityDetection(videoDesignResponse, currentVideoPath);
-
-                                Integer currentScore = videoQuality.getTotalScore();
-                                log.info("视频质量检测得分: {}", currentScore);
-
-                                if (bestVideoScore == null || (currentScore != null && currentScore > bestVideoScore)) {
-                                    bestVideoScore = currentScore;
-                                    bestVideoPath = currentVideoPath;
-                                }
-
-                                if (videoQuality.getPass() != null && videoQuality.getPass()) {
-                                    log.info("视频质量检测通过");
-                                    videoWithAudioPath = currentVideoPath;
-                                    break;
-                                } else {
-                                    log.warn("视频质量检测未通过，重试第 {}/{} 次", retryCount + 1, maxRetry);
-                                    // 如果视频质量档次较低，需要对视频提示词进行动态修改微调
-                                    if (videoQuality.getImprovementSuggestions() != null) {
-                                        com.example.aiworkshop.dto.response.VideoDesignResponse newVideoDesignResponse = new com.example.aiworkshop.dto.response.VideoDesignResponse();
-                                        newVideoDesignResponse.setChinese(videoQuality.getImprovementSuggestions().getChinese());
-                                        newVideoDesignResponse.setEnglish(videoQuality.getImprovementSuggestions().getEnglish());
-                                        newVideoDesignResponse.setEstimatedDuration(shot.getEstimatedDuration());
-                                        videoDesignResponse = newVideoDesignResponse;
-                                        log.info("已使用视频改进建议更新提示词");
+                            if (quality) {
+                                // 需要质量检测，带重试逻辑
+                                while (retryCount < maxRetry) {
+                                    if (retryCount == 0) {
+                                        // 根据关键帧提示词、镜头信息、图片信息首次生成视频生成提示词
+                                        log.info("步骤9: 视频提示词生成");
+                                        videoDesignResponse = videoGenerateTools.videoDesign(keyframeResponse, scene.getSceneId(), shot, imagePath, videoDuration);
+                                    } else {
+                                        log.info("步骤9: 使用改进建议更新提示词（重试第 {}/{} 次）", retryCount, maxRetry);
                                     }
 
-                                    retryCount++;
+                                    log.info("步骤10: 关键帧生成视频");
+                                    String currentVideoPath = multimediaUtils.generateVideoWithAudio(videoDesignResponse, imagePath, userId, fatherTaskId);
+                                    log.info("视频生成成功: {}", currentVideoPath);
+
+                                    log.info("步骤11: 视频质量检测");
+                                    com.example.aiworkshop.dto.response.VideoQualityDetectionResponse videoQuality = videoGenerateTools.videoQualityDetection(videoDesignResponse, currentVideoPath);
+
+                                    Integer currentScore = videoQuality.getTotalScore();
+                                    log.info("视频质量检测得分: {}", currentScore);
+
+                                    // 记录最佳结果
+                                    if (bestVideoScore == null || (currentScore != null && currentScore > bestVideoScore)) {
+                                        bestVideoScore = currentScore;
+                                        bestVideoPath = currentVideoPath;
+                                    }
+
+                                    // 质量检测通过，退出重试循环
+                                    if (videoQuality.getPass() != null && videoQuality.getPass()) {
+                                        log.info("视频质量检测通过");
+                                        videoWithAudioPath = currentVideoPath;
+                                        break;
+                                    } else {
+                                        log.warn("视频质量检测未通过，重试第 {}/{} 次", retryCount + 1, maxRetry);
+                                        // 使用改进建议更新提示词
+                                        if (videoQuality.getImprovementSuggestions() != null) {
+                                            com.example.aiworkshop.dto.response.VideoDesignResponse newVideoDesignResponse = new com.example.aiworkshop.dto.response.VideoDesignResponse();
+                                            newVideoDesignResponse.setChinese(videoQuality.getImprovementSuggestions().getChinese());
+                                            newVideoDesignResponse.setEnglish(videoQuality.getImprovementSuggestions().getEnglish());
+                                            newVideoDesignResponse.setEstimatedDuration(videoDuration);
+                                            videoDesignResponse = newVideoDesignResponse;
+                                            log.info("已使用视频改进建议更新提示词");
+                                        }
+
+                                        retryCount++;
+                                    }
                                 }
+
+                                // 达到最大重试次数，使用得分最高的视频
+                                if (retryCount >= maxRetry) {
+                                    log.warn("视频质量检测达到最大重试次数，使用得分最高的视频，得分: {}", bestVideoScore);
+                                    videoWithAudioPath = bestVideoPath;
+                                    if (videoWithAudioPath == null) {
+                                        throw new RuntimeException("视频生成失败，场景: " + scene.getSceneId() + ", 分镜: " + shot.getShotId());
+                                    }
+                                }
+                            } else {
+                                // 不需要质量检测，直接生成一次
+                                log.info("步骤9: 视频提示词生成（跳过质量检测）");
+                                videoDesignResponse = videoGenerateTools.videoDesign(keyframeResponse, scene.getSceneId(), shot, imagePath, videoDuration);
+
+                                log.info("步骤10: 关键帧生成视频（跳过质量检测）");
+                                videoWithAudioPath = multimediaUtils.generateVideoWithAudio(videoDesignResponse, imagePath, userId, fatherTaskId);
+                                log.info("视频生成成功: {}", videoWithAudioPath);
                             }
 
-                            if (retryCount >= maxRetry) {
-                                log.warn("视频质量检测达到最大重试次数，使用得分最高的视频，得分: {}", bestVideoScore);
-                                videoWithAudioPath = bestVideoPath;
-                                if (videoWithAudioPath == null) {
-                                    throw new RuntimeException("视频生成失败，场景: " + scene.getSceneId() + ", 分镜: " + shot.getShotId());
-                                }
-                            }
-
-                            log.info("步骤11: 视频背景音去除");
+                            // ========== 步骤12: 视频背景音去除 ==========
+                            log.info("步骤12: 视频背景音去除");
                             String videoWithoutAudioPath = multimediaUtils.removeAudio(videoWithAudioPath);
                             log.info("视频背景音去除完成: {}", videoWithoutAudioPath);
 
-                            String audioPath = null;
-                            com.example.aiworkshop.dto.response.NarrationAudioResponse.NarrationItem narrationItem = 
-                                narrationAudioResponse != null ? narrationAudioResponse.findBySceneIdAndShotId(scene.getSceneId(), shot.getShotId()) : null;
-                            if (narrationItem != null) {
-                                log.info("步骤12: 生成镜头对应的音频");
-                                audioPath = multimediaUtils.generateSpeech(narrationItem, userId, fatherTaskId);
-                                log.info("音频生成成功: {}", audioPath);
-                            }
-
+                            // ========== 步骤13: 音视频整合 ==========
                             log.info("步骤13: 音视频整合");
-                            String mergedVideoPath = multimediaUtils.mergeAudioVideo(videoWithoutAudioPath, audioPath);
+                            String mergedVideoPath;
+                            if (audioPath != null) {
+                                mergedVideoPath = multimediaUtils.mergeAudioVideo(videoWithoutAudioPath, audioPath);
+                            } else {
+                                // 如果没有音频，直接使用去除背景音后的视频
+                                log.info("无音频文件，直接使用去除背景音后的视频");
+                                mergedVideoPath = videoWithoutAudioPath;
+                            }
                             log.info("音视频整合完成: {}", mergedVideoPath);
 
+                            // 将当前镜头的视频加入列表，用于后续拼接
                             videoPaths.add(mergedVideoPath);
                         }
                     }
 
-                    task.setProgress((int) ((processedScenes * 100.0) / totalScenes));
+                    // 更新进度（场景处理进度占90%，保留10%给后续步骤）
+                    int progress = (int) ((processedScenes * 90.0) / totalScenes);
+                    task.setProgress(progress);
                     updateTask(task);
+                    log.info("场景处理进度: {}%", progress);
                 }
             }
 
-            log.info("步骤15: 视频拼接");
+            // 检查是否生成了视频片段
+            if (videoPaths.isEmpty()) {
+                throw new RuntimeException("未生成任何视频片段，请检查分镜设计结果");
+            }
+
+            // ========== 步骤14: 视频拼接 ==========
+            log.info("步骤14: 视频拼接");
             String finalVideoPath = multimediaUtils.concatVideos(videoPaths.toArray(new String[0]));
             log.info("视频拼接完成: {}", finalVideoPath);
 
-            log.info("步骤16: 字幕生成");
-            String subtitlePath = multimediaUtils.generateSubtitles(finalVideoPath);
-            log.info("字幕生成完成: {}", subtitlePath);
-
-            log.info("步骤17: 字幕烧录");
-            String finalVideoWithSubtitles = multimediaUtils.burnSubtitles(finalVideoPath, subtitlePath);
-            log.info("字幕烧录完成: {}", finalVideoWithSubtitles);
-
+            // ========== 步骤15: 任务完成 ==========
             task.setStatus("执行成功");
             task.setProgress(100);
-            task.setDownloadPath(finalVideoWithSubtitles);
+            task.setDownloadPath(finalVideoPath);
             task.setCompleteTime(LocalDateTime.now());
             updateTask(task);
 
             log.info("========== 科普视频生成任务完成 ==========");
-            log.info("最终视频路径: {}", finalVideoWithSubtitles);
+            log.info("最终视频路径: {}", finalVideoPath);
 
         } catch (Exception e) {
             log.error("科普视频生成任务失败: taskId={}", fatherTaskId, e);
@@ -1252,5 +1439,78 @@ public class TaskService {
             task.setCompleteTime(LocalDateTime.now());
             updateTask(task);
         }
+    }
+
+    /**
+     * 异步执行科普视频生成任务
+     * <p>将科普视频生成任务放到单独的线程中执行，避免占用ComfyUI工作线程。</p>
+     * <p>这样工作线程可以立即返回，继续处理队列中的子任务（图片生成、视频生成等）。</p>
+     * 
+     * @param task 科普视频生成任务实体
+     */
+    private void executeScienceVideoTaskAsync(Task task, String narration) {
+        new Thread(() -> {
+            log.info("========== 科普视频生成任务已提交到异步线程执行 ==========");
+            log.info("父任务ID: {}, 异步线程: {}", task.getTaskId(), Thread.currentThread().getName());
+            
+            try {
+                executeScienceVideoTask(task, narration, false);
+            } catch (Exception e) {
+                log.error("科普视频生成异步任务执行异常: taskId={}", task.getTaskId(), e);
+                task.setStatus("执行失败");
+                task.setProgress(0);
+                task.setCompleteTime(LocalDateTime.now());
+                updateTask(task);
+            }
+            
+            log.info("========== 科普视频生成异步任务线程退出 ==========");
+        }, "ScienceVideoExecutor-" + task.getTaskId()).start();
+    }
+
+    /**
+     * 标准化播音员名称
+     * <p>将大模型返回的speaker名称转换为ComfyUI支持的标准名称，解决大小写不匹配问题。</p>
+     * <p>ComfyUI支持的播音员列表: ['Aiden', 'Dylan', 'Eric', 'Ono_anna', 'Ryan', 'Serena', 'Sohee', 'Uncle_fu', 'Vivian']</p>
+     * 
+     * @param speaker 原始播音员名称
+     * @return 标准化后的播音员名称，如果无法匹配则返回默认值 Vivian
+     */
+    private String normalizeSpeaker(String speaker) {
+        if (speaker == null || speaker.isEmpty()) {
+            return "Vivian";
+        }
+        
+        // ComfyUI支持的播音员列表（注意大小写）
+        java.util.Set<String> validSpeakers = new java.util.HashSet<>(
+            java.util.Arrays.asList("Aiden", "Dylan", "Eric", "Ono_anna", "Ryan", "Serena", "Sohee", "Uncle_fu", "Vivian")
+        );
+        
+        // 直接匹配
+        if (validSpeakers.contains(speaker)) {
+            return speaker;
+        }
+        
+        // 大小写不敏感匹配
+        String lowerSpeaker = speaker.toLowerCase();
+        for (String valid : validSpeakers) {
+            if (valid.toLowerCase().equals(lowerSpeaker)) {
+                log.info("已标准化播音员名称: {} -> {}", speaker, valid);
+                return valid;
+            }
+        }
+        
+        // 模糊匹配（移除下划线、空格等）
+        String normalized = speaker.toLowerCase().replace("_", "").replace(" ", "");
+        for (String valid : validSpeakers) {
+            String validNormalized = valid.toLowerCase().replace("_", "");
+            if (validNormalized.equals(normalized)) {
+                log.info("已标准化播音员名称: {} -> {}", speaker, valid);
+                return valid;
+            }
+        }
+        
+        // 无法匹配，返回默认值
+        log.warn("无法识别播音员名称: {}，使用默认值 Vivian", speaker);
+        return "Vivian";
     }
 }

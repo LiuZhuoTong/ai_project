@@ -50,3 +50,10 @@ qwen:
   api-key: sk-66815fd5e13b4ff19485bb7f5112c1ba
   base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
   model: qwen3.7-plus
+  timeout:
+    connect: 30000
+    read: 120000
+    connection-request: 30000
+  retry:
+    max: 5
+    delay: 10000
