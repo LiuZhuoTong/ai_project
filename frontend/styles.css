@@ -1358,6 +1358,16 @@ body {
     overflow: hidden;
 }
 
+.task-card::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    border-radius: 4px 0 0 4px;
+}
+
 .task-card:hover {
     transform: translateX(4px);
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
@@ -1377,6 +1387,43 @@ body {
 
 .task-card.status-failed {
     border-left-color: #ef4444;
+}
+
+/* 任务类型样式 - 右侧彩色条 */
+.task-card.type-image::after {
+    background: linear-gradient(180deg, #8b5cf6, #7c3aed);
+}
+
+.task-card.type-video::after {
+    background: linear-gradient(180deg, #ec4899, #db2777);
+}
+
+.task-card.type-audio::after {
+    background: linear-gradient(180deg, #06b6d4, #0891b2);
+}
+
+.task-card.type-subtitle::after {
+    background: linear-gradient(180deg, #10b981, #059669);
+}
+
+.task-card.type-science::after {
+    background: linear-gradient(180deg, #f59e0b, #d97706);
+}
+
+.task-card.type-image-video::after {
+    background: linear-gradient(180deg, #8b5cf6, #ec4899);
+}
+
+.task-card.type-video-audio::after {
+    background: linear-gradient(180deg, #ec4899, #06b6d4);
+}
+
+.task-card.type-image-video-audio::after {
+    background: linear-gradient(180deg, #8b5cf6, #ec4899, #06b6d4);
+}
+
+.task-card.type-default::after {
+    background: linear-gradient(180deg, #64748b, #475569);
 }
 
 .task-card.parent-task {

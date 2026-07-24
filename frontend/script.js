@@ -1007,20 +1007,26 @@ async function loadHistoryTasks() {
             page: currentPage,
             size: pageSize,
             status: currentStatusFilter,
-            sort: currentSort
+            sort: currentSort,
+            onlyParent: 'true'
         });
         if (currentSearch.trim()) {
             params.append('keyword', currentSearch.trim());
         }
 
+        console.log('加载任务列表，参数:', params.toString());
         const response = await fetch(`${API_BASE_URL}/tasks/user/${currentUserId}/paged?${params}`);
         const data = await response.json();
+        
+        console.log('后端返回数据:', JSON.stringify(data));
 
         // 更新分页信息
         allTasks = data.content || [];
         filteredTasks = allTasks;
         totalElements = data.totalElements || 0;
         totalPages = data.totalPages || 0;
+        
+        console.log('任务列表长度:', allTasks.length, '过滤后长度:', filteredTasks.length);
 
         // 更新统计信息（来自后端）
         if (data.statistics) {
@@ -1683,7 +1689,10 @@ function renderHistoryTasksFromBackend() {
 
     const now = new Date();
 
-    container.innerHTML = '<div class="task-list">' + filteredTasks.map(task => {
+    let html = '<div class="task-list">';
+
+    // 渲染所有任务（后端已过滤，只有父任务）
+    filteredTasks.forEach(task => {
         const submitTime = new Date(task.submitTime);
         const hoursAgo = Math.floor((now - submitTime) / (1000 * 60 * 60));
         const expiresIn = Math.max(0, 24 - hoursAgo);
@@ -1717,9 +1726,12 @@ function renderHistoryTasksFromBackend() {
 
         const toolName = tools[task.type]?.name || task.type;
         const isUrgent = expiresIn < 10 && expiresIn > 0 && task.status === '执行成功';
+        
+        // 根据任务类型获取样式类
+        const typeClass = getTaskTypeClass(task.type);
 
-        return `
-            <div class="task-card status-${statusClass}">
+        html += `
+            <div class="task-card status-${statusClass} type-${typeClass}">
                 <div class="task-status-icon ${statusClass}">${statusIcon}</div>
                 <div class="task-content">
                     <div class="task-header">
@@ -1758,7 +1770,10 @@ function renderHistoryTasksFromBackend() {
                 </div>
             </div>
         `;
-    }).join('') + '</div>';
+    });
+
+    html += '</div>';
+    container.innerHTML = html;
 
     pagination.style.display = 'flex';
 
@@ -1771,6 +1786,23 @@ function renderHistoryTasksFromBackend() {
 
     // 轮询更新进行中的任务
     startTaskProgressPoll(filteredTasks.filter(t => t.status === '执行中'));
+}
+
+/**
+ * 根据任务类型获取样式类
+ */
+function getTaskTypeClass(type) {
+    const typeMap = {
+        'text-to-image': 'image',
+        'text-to-video': 'video',
+        'text-to-speech': 'audio',
+        'video-remove-subtitle': 'subtitle',
+        'science-video': 'science',
+        'image-to-video': 'image-video',
+        'text-to-video-audio': 'video-audio',
+        'image-to-video-audio': 'image-video-audio'
+    };
+    return typeMap[type] || 'default';
 }
 
 /**
