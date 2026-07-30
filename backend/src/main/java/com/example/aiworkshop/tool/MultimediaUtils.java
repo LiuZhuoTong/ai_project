@@ -28,6 +28,165 @@ public class MultimediaUtils {
 
     private final TaskService taskService;
 
+    private static final int MAX_COMFYUI_RETRY = 10;
+
+    private static final Object COMFYUI_RESTART_LOCK = new Object();
+
+    /**
+     * 重启ComfyUI服务
+     *
+     * <p>执行 docker restart comfyui 命令重启ComfyUI容器，并等待60秒使其完全启动。</p>
+     * <p>使用synchronized锁防止多个线程同时触发重启操作。</p>
+     *
+     * <h3>处理流程：</h3>
+     * <pre>
+     * 1. 获取重启锁，确保同时只有一个线程执行重启
+     * 2. 执行 docker restart comfyui 命令
+     * 3. 验证命令执行结果
+     * 4. 等待60秒让ComfyUI完全启动
+     * 5. 释放锁
+     * </pre>
+     */
+    private void restartComfyUI() {
+        synchronized (COMFYUI_RESTART_LOCK) {
+            log.warn("========== 开始重启ComfyUI服务 ==========");
+            try {
+                ProcessBuilder processBuilder = new ProcessBuilder(
+                        "docker", "restart", "comfyui"
+                );
+                processBuilder.redirectErrorStream(true);
+                Process process = processBuilder.start();
+
+                StringBuilder output = new StringBuilder();
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(process.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        output.append(line).append("\n");
+                    }
+                }
+
+                boolean completed = process.waitFor(5, java.util.concurrent.TimeUnit.MINUTES);
+                if (!completed) {
+                    log.error("重启ComfyUI超时");
+                    process.destroyForcibly();
+                    throw new RuntimeException("重启ComfyUI超时");
+                }
+
+                int exitCode = process.exitValue();
+                if (exitCode != 0) {
+                    log.error("重启ComfyUI失败，退出码: {}, 输出: {}", exitCode, output);
+                    throw new RuntimeException("重启ComfyUI失败: " + output);
+                }
+
+                log.info("ComfyUI重启成功: {}", output);
+
+                log.info("等待ComfyUI完全启动（60秒）...");
+                Thread.sleep(60000);
+                log.info("ComfyUI启动等待完成，可以继续提交任务");
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("重启ComfyUI被中断");
+                throw new RuntimeException("重启ComfyUI被中断", e);
+            } catch (java.io.IOException e) {
+                log.error("执行docker restart命令失败", e);
+                throw new RuntimeException("执行docker restart命令失败: " + e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
+     * ComfyUI任务重试包装器
+     *
+     * <p>封装ComfyUI任务的重试逻辑：最多重试10次，如果全部失败则重启ComfyUI并再尝试一次。</p>
+     *
+     * <h3>重试策略：</h3>
+     * <pre>
+     * 1. 最多重试10次，每次间隔60秒
+     * 2. 10次全部失败后，执行docker restart comfyui重启服务
+     * 3. 重启后等待60秒让服务完全启动
+     * 4. 重启后再尝试1次
+     * 5. 如果重启后仍然失败，抛出异常
+     * </pre>
+     *
+     * @param taskSupplier 任务执行器，封装提交ComfyUI任务并等待结果的完整逻辑
+     * @param taskName 任务名称，用于日志记录
+     * @return 任务执行成功后的结果路径
+     * @throws RuntimeException 重试耗尽且重启后仍失败时抛出
+     */
+    private String executeWithComfyUIRetry(java.util.function.Supplier<String> taskSupplier, String taskName) {
+        String lastErrorMsg = "未知错误";
+
+        for (int attempt = 1; attempt <= MAX_COMFYUI_RETRY; attempt++) {
+            try {
+                log.info("{}第{}次尝试", taskName, attempt);
+                return taskSupplier.get();
+            } catch (Exception e) {
+                lastErrorMsg = e.getMessage();
+                log.error("{}第{}次尝试失败: {}", taskName, attempt, e.getMessage());
+
+                if (attempt < MAX_COMFYUI_RETRY) {
+                    try {
+                        Thread.sleep(60000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("重试等待被中断", ie);
+                    }
+                }
+            }
+        }
+
+        log.error("{}连续{}次失败，重启ComfyUI服务...", taskName, MAX_COMFYUI_RETRY);
+        restartComfyUI();
+
+        log.info("{}重启后重试", taskName);
+        try {
+            return taskSupplier.get();
+        } catch (Exception e) {
+            log.error("{}重启后重试失败: {}", taskName, e.getMessage());
+            throw new RuntimeException(taskName + "失败，已重试" + MAX_COMFYUI_RETRY + "次且重启后仍失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 安全休眠，将InterruptedException转为RuntimeException
+     */
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("线程休眠被中断", e);
+        }
+    }
+
+    /**
+     * 安全创建FileMultipartFile，将IOException转为RuntimeException
+     */
+    private static FileMultipartFile createMultipartFile(File file) {
+        try {
+            return new FileMultipartFile(file);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("创建MultipartFile失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 安全提交任务，将IOException转为RuntimeException
+     */
+    private String submitTaskSafely(String userId, TaskType type, String description, 
+                                    org.springframework.web.multipart.MultipartFile file,
+                                    String speaker, String emotion, Integer videoDuration, 
+                                    Boolean isPolish, String fatherTaskId) {
+        try {
+            return taskService.submitTask(userId, type, description, file, speaker, emotion, 
+                    videoDuration, isPolish, fatherTaskId);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("提交任务失败: " + e.getMessage(), e);
+        }
+    }
+
     /**
      * 获取音频文件时长（秒）
      *
@@ -93,14 +252,15 @@ public class MultimediaUtils {
      * 带音频视频生成
      *
      * <p>根据视频提示词生成带音频的视频，调用ComfyUI工作流进行图生视频。</p>
+     * <p>由于wan2.2模型生成的视频类型为webm，生成成功后会自动调用convertToMp4转换为MP4格式。</p>
      *
      * @param videoDesignResponse 视频设计响应，使用English字段作为提示词
      * @param imagePath 图片路径
      * @param userId 用户ID
      * @param fatherTaskId 父任务ID，记录该视频生成任务属于哪个解说视频生成任务
-     * @return 生成的视频文件路径
+     * @return 生成的视频文件路径（MP4格式）
      */
-    public String generateVideoWithAudio(VideoDesignResponse videoDesignResponse, String imagePath, String userId, String fatherTaskId) {
+    public String generateVideoWithAudioByImage(VideoDesignResponse videoDesignResponse, String imagePath, String userId, String fatherTaskId) {
         log.info("开始生成带音频视频，视频提示词: {}", videoDesignResponse != null ? videoDesignResponse.getEnglish() : null);
         log.info("用户ID: {}, 父任务ID: {}, 预估时长: {}秒", userId, fatherTaskId, videoDesignResponse != null ? videoDesignResponse.getEstimatedDuration() : null);
 
@@ -115,37 +275,37 @@ public class MultimediaUtils {
         }
 
         String description = videoDesignResponse.getEnglish();
+        Integer duration = videoDesignResponse.getEstimatedDuration();
 
-        try {
+        return executeWithComfyUIRetry(() -> {
             File imageFile = new File(imagePath);
             if (!imageFile.exists()) {
-                log.error("图片文件不存在: {}", imagePath);
                 throw new RuntimeException("图片文件不存在: " + imagePath);
             }
 
-            FileMultipartFile multipartFile = new FileMultipartFile(imageFile);
+            FileMultipartFile multipartFile = createMultipartFile(imageFile);
 
-            String taskId = taskService.submitTask(
+            String taskId = submitTaskSafely(
                     userId,
                     TaskType.IMAGE_TO_VIDEO_AUDIO,
                     description,
                     multipartFile,
                     null,
                     null,
-                    videoDesignResponse.getEstimatedDuration(),
+                    duration,
                     false,
                     fatherTaskId
             );
             log.info("带音频视频生成任务已提交，任务ID: {}", taskId);
 
             long startTime = System.currentTimeMillis();
-            long timeoutMs = 30 * 60 * 1000;   // 超时时间，半小时
+            long timeoutMs = 30 * 60 * 1000;
 
             while (System.currentTimeMillis() - startTime < timeoutMs) {
                 Task task = taskService.getTaskEntity(taskId);
                 if (task == null) {
                     log.warn("任务暂未查询到，等待中...");
-                    Thread.sleep(3000);
+                    sleepQuietly(3000);
                     continue;
                 }
 
@@ -155,24 +315,263 @@ public class MultimediaUtils {
                 if ("执行成功".equals(status)) {
                     String downloadPath = task.getDownloadPath();
                     log.info("带音频视频生成成功，文件路径: {}", downloadPath);
+
+                    if (downloadPath != null) {
+                        String mp4Path = convertToMp4(downloadPath);
+                        log.info("已将视频转换为MP4格式: {}", mp4Path);
+                        return mp4Path;
+                    }
+
                     return downloadPath;
                 }
 
                 if ("执行失败".equals(status)) {
-                    log.error("带音频视频生成任务失败");
                     throw new RuntimeException("带音频视频生成任务失败");
                 }
 
-                Thread.sleep(3000);
+                sleepQuietly(3000);
             }
 
-            log.error("带音频视频生成任务超时");
             throw new RuntimeException("带音频视频生成任务超时");
+        }, "带音频视频生成");
+    }
 
-        } catch (Exception e) {
-            log.error("带音频视频生成失败", e);
-            throw new RuntimeException("带音频视频生成失败", e);
+    /**
+     * 文字生成带音频视频
+     *
+     * <p>根据视频设计响应生成带音频的视频，调用ComfyUI工作流进行文生视频（带音频）。</p>
+     * <p>由于wan2.2模型生成的视频类型为webm，生成成功后会自动调用convertToMp4转换为MP4格式。</p>
+     *
+     * @param videoDesignResponse 视频设计响应，使用English字段作为提示词
+     * @param userId 用户ID
+     * @param fatherTaskId 父任务ID，记录该视频生成任务属于哪个解说视频生成任务
+     * @return 生成的视频文件路径（MP4格式）
+     */
+    public String generateVideoWithAudioByText(VideoDesignResponse videoDesignResponse, String userId, String fatherTaskId) {
+        log.info("开始文字生成带音频视频，视频提示词: {}", videoDesignResponse != null ? videoDesignResponse.getEnglish() : null);
+        log.info("用户ID: {}, 父任务ID: {}, 预估时长: {}秒", userId, fatherTaskId, videoDesignResponse != null ? videoDesignResponse.getEstimatedDuration() : null);
+
+        if (videoDesignResponse == null || videoDesignResponse.getEnglish() == null || videoDesignResponse.getEnglish().isEmpty()) {
+            log.error("视频提示词为空");
+            throw new IllegalArgumentException("视频提示词不能为空");
         }
+
+        String description = videoDesignResponse.getEnglish();
+        Integer duration = videoDesignResponse.getEstimatedDuration();
+
+        return executeWithComfyUIRetry(() -> {
+            String taskId = submitTaskSafely(
+                    userId,
+                    TaskType.TEXT_TO_VIDEO_AUDIO,
+                    description,
+                    null,
+                    null,
+                    null,
+                    duration,
+                    false,
+                    fatherTaskId
+            );
+            log.info("文字生成带音频视频任务已提交，任务ID: {}", taskId);
+
+            long startTime = System.currentTimeMillis();
+            long timeoutMs = 30 * 60 * 1000;
+
+            while (System.currentTimeMillis() - startTime < timeoutMs) {
+                Task task = taskService.getTaskEntity(taskId);
+                if (task == null) {
+                    log.warn("任务暂未查询到，等待中...");
+                    sleepQuietly(3000);
+                    continue;
+                }
+
+                String status = task.getStatus();
+                log.debug("任务状态: {}, 进度: {}%", status, task.getProgress());
+
+                if ("执行成功".equals(status)) {
+                    String downloadPath = task.getDownloadPath();
+                    log.info("文字生成带音频视频成功，文件路径: {}", downloadPath);
+
+                    if (downloadPath != null) {
+                        String mp4Path = convertToMp4(downloadPath);
+                        log.info("已将视频转换为MP4格式: {}", mp4Path);
+                        return mp4Path;
+                    }
+
+                    return downloadPath;
+                }
+
+                if ("执行失败".equals(status)) {
+                    throw new RuntimeException("文字生成带音频视频任务失败");
+                }
+
+                sleepQuietly(3000);
+            }
+
+            throw new RuntimeException("文字生成带音频视频任务超时");
+        }, "文字生成带音频视频");
+    }
+
+    /**
+     * 图片生成视频
+     *
+     * <p>根据视频提示词生成不带音频的视频，调用ComfyUI工作流进行图生视频。</p>
+     * <p>由于wan2.2模型生成的视频类型为webm，生成成功后会自动调用convertToMp4转换为MP4格式。</p>
+     *
+     * @param videoDesignResponse 视频设计响应，使用English字段作为提示词
+     * @param imagePath 图片路径
+     * @param userId 用户ID
+     * @param fatherTaskId 父任务ID，记录该视频生成任务属于哪个解说视频生成任务
+     * @return 生成的视频文件路径（MP4格式）
+     */
+    public String generateVideoByImage(VideoDesignResponse videoDesignResponse, String imagePath, String userId, String fatherTaskId) {
+        log.info("开始生成视频，视频提示词: {}", videoDesignResponse != null ? videoDesignResponse.getEnglish() : null);
+        log.info("用户ID: {}, 父任务ID: {}, 预估时长: {}秒", userId, fatherTaskId, videoDesignResponse != null ? videoDesignResponse.getEstimatedDuration() : null);
+
+        if (videoDesignResponse == null || videoDesignResponse.getEnglish() == null || videoDesignResponse.getEnglish().isEmpty()) {
+            log.error("视频提示词为空");
+            throw new IllegalArgumentException("视频提示词不能为空");
+        }
+
+        if (imagePath == null || imagePath.isEmpty()) {
+            log.error("图片路径为空");
+            throw new IllegalArgumentException("图片路径不能为空");
+        }
+
+        String description = videoDesignResponse.getEnglish();
+        Integer duration = videoDesignResponse.getEstimatedDuration();
+
+        return executeWithComfyUIRetry(() -> {
+            File imageFile = new File(imagePath);
+            if (!imageFile.exists()) {
+                throw new RuntimeException("图片文件不存在: " + imagePath);
+            }
+
+            FileMultipartFile multipartFile = createMultipartFile(imageFile);
+
+            String taskId = submitTaskSafely(
+                    userId,
+                    TaskType.IMAGE_TO_VIDEO,
+                    description,
+                    multipartFile,
+                    null,
+                    null,
+                    duration,
+                    false,
+                    fatherTaskId
+            );
+            log.info("视频生成任务已提交，任务ID: {}", taskId);
+
+            long startTime = System.currentTimeMillis();
+            long timeoutMs = 30 * 60 * 1000;
+
+            while (System.currentTimeMillis() - startTime < timeoutMs) {
+                Task task = taskService.getTaskEntity(taskId);
+                if (task == null) {
+                    log.warn("任务暂未查询到，等待中...");
+                    sleepQuietly(3000);
+                    continue;
+                }
+
+                String status = task.getStatus();
+                log.debug("任务状态: {}, 进度: {}%", status, task.getProgress());
+
+                if ("执行成功".equals(status)) {
+                    String downloadPath = task.getDownloadPath();
+                    log.info("视频生成成功，文件路径: {}", downloadPath);
+
+                    if (downloadPath != null) {
+                        String mp4Path = convertToMp4(downloadPath);
+                        log.info("已将视频转换为MP4格式: {}", mp4Path);
+                        return mp4Path;
+                    }
+
+                    return downloadPath;
+                }
+
+                if ("执行失败".equals(status)) {
+                    throw new RuntimeException("视频生成任务失败");
+                }
+
+                sleepQuietly(3000);
+            }
+
+            throw new RuntimeException("视频生成任务超时");
+        }, "视频生成");
+    }
+
+    /**
+     * 文字生成视频
+     *
+     * <p>根据视频设计响应生成不带音频的视频，调用ComfyUI工作流进行文生视频。</p>
+     * <p>由于wan2.2模型生成的视频类型为webm，生成成功后会自动调用convertToMp4转换为MP4格式。</p>
+     *
+     * @param videoDesignResponse 视频设计响应，使用English字段作为提示词
+     * @param userId 用户ID
+     * @param fatherTaskId 父任务ID，记录该视频生成任务属于哪个解说视频生成任务
+     * @return 生成的视频文件路径（MP4格式）
+     */
+    public String generateVideoByText(VideoDesignResponse videoDesignResponse, String userId, String fatherTaskId) {
+        log.info("开始文字生成视频，视频提示词: {}", videoDesignResponse != null ? videoDesignResponse.getEnglish() : null);
+        log.info("用户ID: {}, 父任务ID: {}, 预估时长: {}秒", userId, fatherTaskId, videoDesignResponse != null ? videoDesignResponse.getEstimatedDuration() : null);
+
+        if (videoDesignResponse == null || videoDesignResponse.getEnglish() == null || videoDesignResponse.getEnglish().isEmpty()) {
+            log.error("视频提示词为空");
+            throw new IllegalArgumentException("视频提示词不能为空");
+        }
+
+        String description = videoDesignResponse.getEnglish();
+        Integer duration = videoDesignResponse.getEstimatedDuration();
+
+        return executeWithComfyUIRetry(() -> {
+            String taskId = submitTaskSafely(
+                    userId,
+                    TaskType.TEXT_TO_VIDEO,
+                    description,
+                    null,
+                    null,
+                    null,
+                    duration,
+                    false,
+                    fatherTaskId
+            );
+            log.info("文字生成视频任务已提交，任务ID: {}", taskId);
+
+            long startTime = System.currentTimeMillis();
+            long timeoutMs = 30 * 60 * 1000;
+
+            while (System.currentTimeMillis() - startTime < timeoutMs) {
+                Task task = taskService.getTaskEntity(taskId);
+                if (task == null) {
+                    log.warn("任务暂未查询到，等待中...");
+                    sleepQuietly(3000);
+                    continue;
+                }
+
+                String status = task.getStatus();
+                log.debug("任务状态: {}, 进度: {}%", status, task.getProgress());
+
+                if ("执行成功".equals(status)) {
+                    String downloadPath = task.getDownloadPath();
+                    log.info("文字生成视频成功，文件路径: {}", downloadPath);
+
+                    if (downloadPath != null) {
+                        String mp4Path = convertToMp4(downloadPath);
+                        log.info("已将视频转换为MP4格式: {}", mp4Path);
+                        return mp4Path;
+                    }
+
+                    return downloadPath;
+                }
+
+                if ("执行失败".equals(status)) {
+                    throw new RuntimeException("文字生成视频任务失败");
+                }
+
+                sleepQuietly(3000);
+            }
+
+            throw new RuntimeException("文字生成视频任务超时");
+        }, "文字生成视频");
     }
 
     /**
@@ -196,8 +595,8 @@ public class MultimediaUtils {
 
         String description = keyframeDesignResponse.getEnglish();
 
-        try {
-            String taskId = taskService.submitTask(
+        return executeWithComfyUIRetry(() -> {
+            String taskId = submitTaskSafely(
                     userId,
                     TaskType.TEXT_TO_IMAGE,
                     description,
@@ -211,13 +610,13 @@ public class MultimediaUtils {
             log.info("图片生成任务已提交，任务ID: {}", taskId);
 
             long startTime = System.currentTimeMillis();
-            long timeoutMs = 30 * 60 * 1000;   // 超时时间，半小时
+            long timeoutMs = 30 * 60 * 1000;
 
             while (System.currentTimeMillis() - startTime < timeoutMs) {
                 Task task = taskService.getTaskEntity(taskId);
                 if (task == null) {
                     log.warn("任务暂未查询到，等待中...");
-                    Thread.sleep(3000);
+                    sleepQuietly(3000);
                     continue;
                 }
 
@@ -231,31 +630,26 @@ public class MultimediaUtils {
                 }
 
                 if ("执行失败".equals(status)) {
-                    log.error("图片生成任务失败");
                     throw new RuntimeException("图片生成任务失败");
                 }
 
-                Thread.sleep(3000);
+                sleepQuietly(3000);
             }
 
-            log.error("图片生成任务超时");
             throw new RuntimeException("图片生成任务超时");
-
-        } catch (Exception e) {
-            log.error("图片生成失败", e);
-            throw new RuntimeException("图片生成失败", e);
-        }
+        }, "图片生成");
     }
 
     /**
      * 文字生成语音
      *
      * <p>根据旁白内容生成语音，调用ComfyUI工作流进行文生语音。</p>
+     * <p>语音生成成功后，会自动调用adjustFlacSpeed调整音频语速（默认1.3倍速）。</p>
      *
      * @param narrationItem 旁白项，包含text、emotion、speaker字段
      * @param userId 用户ID
      * @param fatherTaskId 父任务ID，记录该语音生成任务属于哪个解说视频生成任务
-     * @return 生成的语音文件路径
+     * @return 语速调整后的语音文件路径
      */
     public String generateSpeech(NarrationAudioResponse.NarrationItem narrationItem, String userId, String fatherTaskId) {
         log.info("开始生成语音，台词: {}", narrationItem != null ? narrationItem.getText() : null);
@@ -272,8 +666,8 @@ public class MultimediaUtils {
         String speaker = narrationItem.getSpeaker();
         String emotion = narrationItem.getEmotion();
 
-        try {
-            String taskId = taskService.submitTask(
+        String downloadPath = executeWithComfyUIRetry(() -> {
+            String taskId = submitTaskSafely(
                     userId,
                     TaskType.TEXT_TO_SPEECH,
                     description,
@@ -287,13 +681,13 @@ public class MultimediaUtils {
             log.info("语音生成任务已提交，任务ID: {}", taskId);
 
             long startTime = System.currentTimeMillis();
-            long timeoutMs = 30 * 60 * 1000;   // 设置超时时间，半小时
+            long timeoutMs = 30 * 60 * 1000;
 
             while (System.currentTimeMillis() - startTime < timeoutMs) {
                 Task task = taskService.getTaskEntity(taskId);
                 if (task == null) {
                     log.warn("任务暂未查询到，等待中...");
-                    Thread.sleep(3000);
+                    sleepQuietly(3000);
                     continue;
                 }
 
@@ -301,34 +695,32 @@ public class MultimediaUtils {
                 log.debug("任务状态: {}, 进度: {}%", status, task.getProgress());
 
                 if ("执行成功".equals(status)) {
-                    String downloadPath = task.getDownloadPath();
-                    log.info("语音生成成功，文件路径: {}", downloadPath);
-                    
-                    // 如果是ComfyUI临时文件，复制到安全位置避免被清理
-                    if (downloadPath != null && downloadPath.contains("ComfyUI_temp_")) {
-                        String safePath = copyToSafeLocation(downloadPath);
-                        log.info("已将临时音频文件复制到安全位置: {}", safePath);
-                        return safePath;
-                    }
-                    
-                    return downloadPath;
+                    String path = task.getDownloadPath();
+                    log.info("语音生成成功，文件路径: {}", path);
+                    return path;
                 }
 
                 if ("执行失败".equals(status)) {
-                    log.error("语音生成任务失败");
                     throw new RuntimeException("语音生成任务失败");
                 }
 
-                Thread.sleep(3000);
+                sleepQuietly(3000);
             }
 
-            log.error("语音生成任务超时");
             throw new RuntimeException("语音生成任务超时");
+        }, "语音生成");
 
-        } catch (Exception e) {
-            log.error("语音生成失败", e);
-            throw new RuntimeException("语音生成失败", e);
+        String audioPath;
+        if (downloadPath != null && downloadPath.contains("ComfyUI_temp_")) {
+            audioPath = copyToSafeLocation(downloadPath);
+            log.info("已将临时音频文件复制到安全位置: {}", audioPath);
+        } else {
+            audioPath = downloadPath;
         }
+
+        String adjustedPath = adjustFlacSpeed(audioPath);
+        log.info("音频语速调整完成，输出路径: {}", adjustedPath);
+        return adjustedPath;
     }
 
     /**
@@ -428,11 +820,11 @@ public class MultimediaUtils {
     /**
      * 音视频整合
      *
-     * <p>将音频文件与视频文件合并。</p>
+     * <p>将FLAC音频文件烧录到MP4视频中，使用-shortest以较短流为准。</p>
      *
-     * @param videoPath 视频文件路径
-     * @param audioPath 音频文件路径
-     * @return 合成后的视频文件路径
+     * @param videoPath MP4视频文件路径
+     * @param audioPath FLAC音频文件路径
+     * @return 合并后的视频文件路径
      */
     public static String mergeAudioVideo(String videoPath, String audioPath) {
         log.info("执行音视频整合，视频路径: {}, 音频路径: {}", videoPath, audioPath);
@@ -673,315 +1065,61 @@ public class MultimediaUtils {
     }
 
     /**
-     * 字幕生成
-     * <p>从视频文件中自动识别语音内容并生成SRT格式字幕。</p>
-     * 
-     * <h3>处理流程：</h3>
-     * <pre>
-     * 1. 输入验证：检查视频路径、文件存在性、FFmpeg和Whisper可用性
-     * 2. 音频提取：使用FFmpeg从视频中提取音频，转换为WAV格式（16kHz, 单声道, PCM编码）
-     * 3. 语音识别：调用Whisper CLI对提取的音频进行语音识别，生成SRT字幕文件
-     * 4. 结果读取：读取Whisper生成的SRT文件内容并返回
-     * 5. 资源清理：在finally块中删除临时音频文件和生成的SRT文件
-     * </pre>
-     * 
-     * <h3>关键技术说明：</h3>
-     * <ul>
-     *   <li>音频格式转换：将视频中的音频提取为16kHz采样率、单声道、PCM_S16LE编码的WAV文件，这是Whisper推荐的输入格式</li>
-     *   <li>SRT文件命名：Whisper根据输入音频文件名生成SRT文件（如 audio_12345.wav → audio_12345.srt），而非根据视频文件名</li>
-     *   <li>超时控制：音频提取超时60秒，Whisper识别超时10分钟（考虑到长视频识别耗时）</li>
-     *   <li>异常处理：任何步骤失败都会抛出RuntimeException，并在finally块中确保临时文件被清理</li>
-     * </ul>
-     * 
-     * @param videoPath 视频文件路径（支持MP4等常见视频格式）
-     * @return 字幕内容（标准SRT格式字符串，包含时间戳和文本内容）
-     * @throws IllegalArgumentException 当视频路径为空时抛出
-     * @throws RuntimeException 当视频文件不存在、FFmpeg/Whisper不可用、处理超时或失败时抛出
-     */
-    public static String generateSubtitles(String videoPath) {
-        log.info("开始执行字幕生成，视频路径: {}", videoPath);
-
-        // ========== 输入验证阶段 ==========
-        if (videoPath == null || videoPath.isEmpty()) {
-            log.error("视频路径为空");
-            throw new IllegalArgumentException("视频路径不能为空");
-        }
-
-        File videoFile = new File(videoPath);
-        if (!videoFile.exists()) {
-            log.error("视频文件不存在: {}", videoPath);
-            throw new RuntimeException("视频文件不存在: " + videoPath);
-        }
-
-        // 检查FFmpeg是否可用（用于提取音频）
-        if (!isFfmpegAvailable()) {
-            throw new RuntimeException("FFmpeg 未安装或不可用");
-        }
-
-        // 检查Whisper是否可用（用于语音识别）
-        if (!isWhisperAvailable()) {
-            throw new RuntimeException("Whisper 未安装或不可用");
-        }
-
-        // 获取输出目录，Whisper生成的SRT文件将保存在此目录
-        String outputDir = videoFile.getParent();
-        if (outputDir == null) {
-            outputDir = System.getProperty("java.io.tmpdir");
-            log.warn("视频文件无父目录，使用系统临时目录: {}", outputDir);
-        }
-
-        // 声明需要在finally块中清理的资源
-        File tempAudioFile = null;      // FFmpeg提取的临时WAV音频文件
-        File generatedSrtFile = null;    // Whisper生成的SRT字幕文件
-
-        try {
-            // ========== 步骤1：从视频中提取音频 ==========
-            // 创建临时WAV文件，用于存放提取的音频
-            tempAudioFile = File.createTempFile("audio_", ".wav");
-            log.info("创建临时音频文件: {}", tempAudioFile.getAbsolutePath());
-
-            // FFmpeg命令参数说明：
-            // -i: 输入文件
-            // -vn: 禁用视频流（只提取音频）
-            // -acodec pcm_s16le: 使用PCM 16位小端编码（Whisper推荐格式）
-            // -ar 16000: 设置采样率为16kHz（Whisper推荐采样率）
-            // -ac 1: 设置为单声道
-            // -f wav: 指定输出格式为WAV
-            // -y: 覆盖已存在的输出文件
-            ProcessBuilder extractBuilder = new ProcessBuilder(
-                    "ffmpeg",
-                    "-i", videoPath,
-                    "-vn",
-                    "-acodec", "pcm_s16le",
-                    "-ar", "16000",
-                    "-ac", "1",
-                    "-f", "wav",
-                    "-y",
-                    tempAudioFile.getAbsolutePath()
-            );
-
-            // 将标准错误流重定向到标准输出流，统一读取
-            extractBuilder.redirectErrorStream(true);
-            Process extractProcess = extractBuilder.start();
-
-            // 读取FFmpeg的输出日志
-            StringBuilder extractOutput = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(extractProcess.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    extractOutput.append(line).append("\n");
-                }
-            }
-
-            // 等待FFmpeg完成，设置60秒超时
-            boolean extractCompleted = extractProcess.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
-            if (!extractCompleted) {
-                log.error("FFmpeg提取音频超时，强制终止进程");
-                extractProcess.destroyForcibly();
-                throw new RuntimeException("FFmpeg提取音频超时");
-            }
-
-            // 检查FFmpeg退出码，非0表示失败
-            int extractExitCode = extractProcess.exitValue();
-            if (extractExitCode != 0) {
-                log.error("FFmpeg提取音频失败，退出码: {}, 输出信息: {}", extractExitCode, extractOutput);
-                throw new RuntimeException("FFmpeg提取音频失败");
-            }
-
-            log.info("音频提取完成，临时文件大小: {} bytes", tempAudioFile.length());
-
-            // ========== 步骤2：使用Whisper进行语音识别 ==========
-            log.info("开始调用Whisper进行语音识别");
-
-            // Whisper CLI参数说明：
-            // --model base: 使用base模型（速度较快，准确率适中）
-            // --language Chinese: 指定语言为中文
-            // --output_format srt: 输出格式为SRT字幕
-            // --output_dir: 指定输出目录
-            ProcessBuilder whisperBuilder = new ProcessBuilder(
-                    "whisper",
-                    tempAudioFile.getAbsolutePath(),
-                    "--model", "base",
-                    "--language", "Chinese",
-                    "--output_format", "srt",
-                    "--output_dir", outputDir
-            );
-
-            // 将标准错误流重定向到标准输出流，统一读取
-            whisperBuilder.redirectErrorStream(true);
-            Process whisperProcess = whisperBuilder.start();
-
-            // 读取Whisper的输出日志
-            StringBuilder whisperOutput = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(whisperProcess.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    whisperOutput.append(line).append("\n");
-                }
-            }
-
-            // 等待Whisper完成，设置10分钟超时（语音识别耗时较长）
-            boolean completed = whisperProcess.waitFor(10, java.util.concurrent.TimeUnit.MINUTES);
-            if (!completed) {
-                log.error("Whisper处理超时，强制终止进程");
-                whisperProcess.destroyForcibly();
-                throw new RuntimeException("Whisper处理超时");
-            }
-
-            // 检查Whisper退出码，非0表示失败
-            int exitCode = whisperProcess.exitValue();
-            if (exitCode != 0) {
-                log.error("Whisper执行失败，退出码: {}, 输出信息: {}", exitCode, whisperOutput);
-                throw new RuntimeException("Whisper执行失败: " + whisperOutput);
-            }
-
-            // ========== 步骤3：读取生成的SRT文件 ==========
-            // 关键注意点：Whisper生成的SRT文件名基于输入音频文件名，而非视频文件名
-            // 例如：输入 audio_12345.wav → 生成 audio_12345.srt
-            String audioFileName = tempAudioFile.getName();
-            String srtFileName = audioFileName.substring(0, audioFileName.lastIndexOf('.')) + ".srt";
-            String srtPath = outputDir + File.separator + srtFileName;
-            generatedSrtFile = new File(srtPath);
-
-            // 验证SRT文件是否生成成功
-            if (generatedSrtFile.exists()) {
-                String srtContent = new String(Files.readAllBytes(generatedSrtFile.toPath()), StandardCharsets.UTF_8);
-                log.info("字幕生成完成，SRT文件路径: {}, 内容长度: {} 字符", srtPath, srtContent.length());
-                return srtContent;
-            } else {
-                log.error("Whisper执行成功但未生成SRT文件，期望路径: {}", srtPath);
-                throw new RuntimeException("Whisper未生成字幕文件");
-            }
-
-        } catch (java.io.IOException e) {
-            // IO异常：文件创建失败、命令执行失败等
-            log.error("执行字幕生成命令失败: {}", e.getMessage(), e);
-            throw new RuntimeException("字幕生成失败: " + e.getMessage(), e);
-        } catch (InterruptedException e) {
-            // 线程中断异常：处理过程被外部中断
-            log.warn("字幕生成被中断");
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("字幕生成被中断", e);
-        } finally {
-            // ========== 资源清理阶段 ==========
-            // 删除临时音频文件
-            if (tempAudioFile != null && tempAudioFile.exists()) {
-                boolean deleted = tempAudioFile.delete();
-                log.debug("删除临时音频文件: path={}, 结果={}", tempAudioFile.getAbsolutePath(), deleted);
-            }
-            // 删除Whisper生成的SRT文件（已读取内容，不再需要）
-            if (generatedSrtFile != null && generatedSrtFile.exists()) {
-                boolean deleted = generatedSrtFile.delete();
-                log.debug("删除生成的SRT文件: path={}, 结果={}", generatedSrtFile.getAbsolutePath(), deleted);
-            }
-        }
-    }
-
-    /**
-     * 检查Whisper语音识别工具是否可用
-     * <p>通过执行 whisper --help 命令来验证Whisper是否已安装并可在系统路径中找到。</p>
-     * 
-     * @return true表示Whisper可用，false表示不可用
-     */
-    private static boolean isWhisperAvailable() {
-        try {
-            ProcessBuilder processBuilder = new ProcessBuilder("whisper", "--help");
-            Process process = processBuilder.start();
-            // 设置5秒超时，避免长时间等待
-            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
-            return process.exitValue() == 0;
-        } catch (Exception e) {
-            log.warn("Whisper 不可用: {}", e.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * 字幕烧录
-     * <p>将字幕内容烧录（硬编码）到视频中，生成带字幕的视频文件。</p>
+     * WebM转MP4格式转换
+     * <p>将WebM格式视频转换为MP4格式，使用H.264视频编码和AAC音频编码。</p>
+     * <p>命令格式: ffmpeg -i input.webm -c:v libx264 -c:a aac -b:a 192k -y output.mp4</p>
      * 
      * <h3>处理流程：</h3>
      * <pre>
      * 1. 输入验证：检查视频路径、文件存在性、FFmpeg可用性
-     * 2. 字幕文件创建：将字幕内容字符串写入临时SRT文件
-     * 3. 字幕烧录：使用FFmpeg的subtitles滤镜将字幕渲染到视频帧
-     * 4. 资源清理：删除临时字幕文件
+     * 2. 格式检查：验证输入文件是否为WebM格式
+     * 3. 生成输出路径：在原文件名基础上替换扩展名
+     * 4. 执行转换：使用FFmpeg将WebM转换为MP4
+     * 5. 结果验证：检查输出文件是否生成成功
      * </pre>
      * 
      * <h3>关键技术说明：</h3>
      * <ul>
-     *   <li>硬编码方式：字幕被直接渲染到视频画面上，无法关闭或提取</li>
-     *   <li>视频重编码：使用-vf滤镜需要对视频进行重新编码，处理时间较长</li>
-     *   <li>路径转义：字幕文件路径中的特殊字符（如冒号、反斜杠）需要转义</li>
+     *   <li>视频编码：使用libx264编码器，保证MP4兼容性</li>
+     *   <li>音频编码：使用AAC编码器，比特率192k，保证音频质量</li>
+     *   <li>超时控制：转换超时10分钟，防止长时间阻塞</li>
+     *   <li>覆盖输出：使用-y参数覆盖已存在的输出文件</li>
      * </ul>
      * 
-     * @param videoPath 视频文件路径（支持MP4等常见视频格式）
-     * @param subtitles 字幕内容字符串（标准SRT格式）
-     * @return 烧录字幕后的视频文件路径
-     * @throws IllegalArgumentException 当视频路径或字幕内容为空时抛出
+     * @param webmPath WebM格式视频文件路径
+     * @return 转换后的MP4格式视频文件路径
+     * @throws IllegalArgumentException 当视频路径为空时抛出
      * @throws RuntimeException 当视频文件不存在、FFmpeg不可用、处理超时或失败时抛出
      */
-    public static String burnSubtitles(String videoPath, String subtitles) {
-        log.info("执行字幕烧录，视频路径: {}", videoPath);
+    public static String convertWebmToMp4(String webmPath) {
+        log.info("执行WebM转MP4格式转换，输入路径: {}", webmPath);
 
-        // ========== 输入验证阶段 ==========
-        if (videoPath == null || videoPath.isEmpty()) {
+        if (webmPath == null || webmPath.isEmpty()) {
             log.error("视频路径为空");
             throw new IllegalArgumentException("视频路径不能为空");
         }
 
-        if (subtitles == null || subtitles.isEmpty()) {
-            log.error("字幕内容为空");
-            throw new IllegalArgumentException("字幕内容不能为空");
-        }
-
-        File videoFile = new File(videoPath);
-        if (!videoFile.exists()) {
-            log.error("视频文件不存在: {}", videoPath);
-            throw new RuntimeException("视频文件不存在: " + videoPath);
-        }
-
-        if (!videoPath.toLowerCase().endsWith(".mp4")) {
-            log.warn("视频文件格式不是 MP4，可能影响处理: {}", videoPath);
-        }
-
-        // 检查FFmpeg是否可用
         if (!isFfmpegAvailable()) {
             throw new RuntimeException("FFmpeg 未安装或不可用");
         }
 
-        String outputPath = generateOutputPath(videoPath, "_with_subtitles");
-        File srtFile = null;
+        File webmFile = new File(webmPath);
+        if (!webmFile.exists()) {
+            log.error("WebM文件不存在: {}", webmPath);
+            throw new RuntimeException("WebM文件不存在: " + webmPath);
+        }
+
+        if (!webmPath.toLowerCase().endsWith(".webm")) {
+            log.warn("输入文件格式不是 WebM，可能影响转换: {}", webmPath);
+        }
+
+        String outputPath = webmPath.substring(0, webmPath.lastIndexOf('.')) + ".mp4";
 
         try {
-            // ========== 步骤1：创建临时字幕文件 ==========
-            // 将字幕内容字符串写入临时SRT文件
-            srtFile = File.createTempFile("subtitles_", ".srt");
-            log.info("创建临时字幕文件: {}", srtFile.getAbsolutePath());
-
-            Files.write(srtFile.toPath(), subtitles.getBytes(StandardCharsets.UTF_8));
-
-            // ========== 步骤2：执行FFmpeg字幕烧录 ==========
-            // FFmpeg命令参数说明：
-            // -i: 输入视频文件
-            // -vf subtitles=: 使用subtitles滤镜加载字幕文件
-            // -c:v libx264: 视频编码器（使用-vf滤镜需要重新编码）
-            // -preset medium: 编码速度与质量的平衡
-            // -crf 23: 恒定质量因子（数值越小质量越高）
-            // -c:a copy: 音频流直接复制，不重新编码
-            // -y: 覆盖已存在的输出文件
-            String filterComplex = "subtitles=" + escapePath(srtFile.getAbsolutePath());
-
             ProcessBuilder processBuilder = new ProcessBuilder(
                     "ffmpeg",
-                    "-i", videoPath,
-                    "-vf", filterComplex,
-                    "-c:v", "libx264",
-                    "-preset", "medium",
-                    "-crf", "23",
-                    "-c:a", "copy",
+                    "-i", webmPath,
+                    "-c", "copy",
                     "-y",
                     outputPath
             );
@@ -1000,8 +1138,7 @@ public class MultimediaUtils {
                 }
             }
 
-            // 设置15分钟超时（字幕烧录需要重新编码视频，耗时较长）
-            boolean completed = process.waitFor(15, java.util.concurrent.TimeUnit.MINUTES);
+            boolean completed = process.waitFor(10, java.util.concurrent.TimeUnit.MINUTES);
             if (!completed) {
                 log.error("FFmpeg处理超时，强制终止进程");
                 process.destroyForcibly();
@@ -1010,36 +1147,362 @@ public class MultimediaUtils {
 
             int exitCode = process.exitValue();
             if (exitCode != 0) {
-                log.error("FFmpeg执行失败，退出码: {}, 输出信息: {}", exitCode, output);
+                log.error("FFmpeg执行失败，退出码: {}, 错误信息: {}", exitCode, output);
                 throw new RuntimeException("FFmpeg执行失败: " + output);
             }
 
-            // 验证输出文件是否生成成功
             File outputFile = new File(outputPath);
             if (!outputFile.exists()) {
-                log.error("字幕烧录完成但输出文件不存在: {}", outputPath);
-                throw new RuntimeException("字幕烧录失败：输出文件未生成");
+                log.error("转换后的MP4文件不存在: {}", outputPath);
+                throw new RuntimeException("转换后的MP4文件不存在: " + outputPath);
             }
 
-            log.info("字幕烧录完成，输出路径: {}, 文件大小: {} bytes", outputPath, outputFile.length());
+            log.info("WebM转MP4格式转换完成，输出路径: {}", outputPath);
             return outputPath;
 
         } catch (java.io.IOException e) {
             log.error("执行FFmpeg命令失败: {}", e.getMessage(), e);
             throw new RuntimeException("执行FFmpeg命令失败: " + e.getMessage(), e);
         } catch (InterruptedException e) {
-            log.warn("FFmpeg处理被中断");
+            log.error("FFmpeg处理被中断", e);
             Thread.currentThread().interrupt();
             throw new RuntimeException("FFmpeg处理被中断", e);
+        }
+    }
+
+    /**
+     * WebP转MP4格式转换
+     * 
+     * <p>使用Python脚本将WebP图片转换为MP4视频格式。</p>
+     * <p>支持动态WebP的多帧提取，使用PIL/Pillow提取帧，cv2/OpenCV编码MP4。</p>
+     * 
+     * <h3>处理流程：</h3>
+     * <pre>
+     * 1. 输入验证：检查图片路径、文件存在性
+     * 2. 格式检查：验证输入文件是否为WebP格式
+     * 3. 生成输出路径：在原文件名基础上替换扩展名
+     * 4. 生成Python脚本：创建临时脚本处理帧提取和编码
+     * 5. 执行转换：运行Python脚本将WebP转为MP4
+     * 6. 结果验证：检查输出文件是否生成成功
+     * 7. 清理：删除临时Python脚本
+     * </pre>
+     * 
+     * <h3>关键技术说明：</h3>
+     * <ul>
+     *   <li>帧提取：使用PIL的seek/tell机制遍历WebP所有帧</li>
+     *   <li>颜色空间：RGB转BGR适配OpenCV的颜色空间要求</li>
+     *   <li>视频编码：使用mp4v编码器，兼容性好</li>
+     *   <li>帧率设置：24fps，保证流畅度</li>
+     *   <li>超时控制：转换超时5分钟，防止长时间阻塞</li>
+     * </ul>
+     * 
+     * @param webpPath WebP格式图片文件路径
+     * @return 转换后的MP4视频文件路径
+     * @throws IllegalArgumentException 当图片路径为空时抛出
+     * @throws RuntimeException 当图片文件不存在、处理超时或失败时抛出
+     */
+    public static String convertWebpToMp4(String webpPath) {
+        log.info("执行WebP转MP4格式转换，输入路径: {}", webpPath);
+
+        if (webpPath == null || webpPath.isEmpty()) {
+            log.error("图片路径为空");
+            throw new IllegalArgumentException("图片路径不能为空");
+        }
+
+        File webpFile = new File(webpPath);
+        if (!webpFile.exists()) {
+            log.error("WebP文件不存在: {}", webpPath);
+            throw new RuntimeException("WebP文件不存在: " + webpPath);
+        }
+
+        if (!webpPath.toLowerCase().endsWith(".webp")) {
+            log.warn("输入文件格式不是 WebP，可能影响转换: {}", webpPath);
+        }
+
+        String outputPath = webpPath.substring(0, webpPath.lastIndexOf('.')) + ".mp4";
+
+        File tempScript = null;
+
+        try {
+            // 生成临时Python脚本
+            String pythonScript = "from PIL import Image\n" +
+                    "import numpy as np\n" +
+                    "import cv2\n" +
+                    "import sys\n" +
+                    "\n" +
+                    "input_path = sys.argv[1]\n" +
+                    "output_path = sys.argv[2]\n" +
+                    "\n" +
+                    "img = Image.open(input_path)\n" +
+                    "frames = []\n" +
+                    "while True:\n" +
+                    "    try:\n" +
+                    "        frames.append(np.array(img.convert('RGB')))\n" +
+                    "        img.seek(img.tell() + 1)\n" +
+                    "    except EOFError:\n" +
+                    "        break\n" +
+                    "\n" +
+                    "if len(frames) == 0:\n" +
+                    "    print('错误: 无法从WebP文件中提取帧')\n" +
+                    "    sys.exit(1)\n" +
+                    "\n" +
+                    "h, w, _ = frames[0].shape\n" +
+                    "fourcc = cv2.VideoWriter_fourcc(*'mp4v')\n" +
+                    "out = cv2.VideoWriter(output_path, fourcc, 24.0, (w, h))\n" +
+                    "for frame in frames:\n" +
+                    "    out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))\n" +
+                    "out.release()\n" +
+                    "print(f'转换完成！共 {len(frames)} 帧')\n";
+
+            // 写入临时Python文件
+            tempScript = File.createTempFile("webp_convert_", ".py");
+            tempScript.deleteOnExit();
+            try (java.io.FileWriter writer = new java.io.FileWriter(tempScript)) {
+                writer.write(pythonScript);
+            }
+
+            log.info("Python转换脚本已生成: {}", tempScript.getAbsolutePath());
+
+            // 执行Python脚本
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "python",
+                    tempScript.getAbsolutePath(),
+                    webpPath,
+                    outputPath
+            );
+
+            processBuilder.redirectErrorStream(true);
+            Process process = processBuilder.start();
+
+            StringBuilder output = new StringBuilder();
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+            }
+
+            boolean completed = process.waitFor(5, java.util.concurrent.TimeUnit.MINUTES);
+            if (!completed) {
+                log.error("Python转换处理超时，强制终止进程");
+                process.destroyForcibly();
+                throw new RuntimeException("Python转换处理超时");
+            }
+
+            int exitCode = process.exitValue();
+            if (exitCode != 0) {
+                log.error("Python转换执行失败，退出码: {}, 错误信息: {}", exitCode, output);
+                throw new RuntimeException("Python转换执行失败: " + output);
+            }
+
+            File outputFile = new File(outputPath);
+            if (!outputFile.exists()) {
+                log.error("转换后的MP4文件不存在: {}", outputPath);
+                throw new RuntimeException("转换后的MP4文件不存在: " + outputPath);
+            }
+
+            log.info("WebP转MP4格式转换完成，输出路径: {}, 详情: {}", outputPath, output);
+            return outputPath;
+
+        } catch (java.io.IOException e) {
+            log.error("执行Python脚本失败: {}", e.getMessage(), e);
+            throw new RuntimeException("执行Python脚本失败: " + e.getMessage(), e);
+        } catch (InterruptedException e) {
+            log.error("Python转换被中断");
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Python转换被中断", e);
         } finally {
-            // ========== 资源清理阶段 ==========
-            // 删除临时字幕文件
-            if (srtFile != null && srtFile.exists()) {
-                boolean deleted = srtFile.delete();
-                log.debug("删除临时字幕文件: path={}, 结果={}", srtFile.getAbsolutePath(), deleted);
+            // 清理临时脚本
+            if (tempScript != null && tempScript.exists()) {
+                boolean deleted = tempScript.delete();
+                if (deleted) {
+                    log.debug("临时Python脚本已清理: {}", tempScript.getAbsolutePath());
+                }
             }
         }
     }
+
+    /**
+     * 统一转换为MP4格式
+     * 
+     * <p>根据文件类型自动选择对应的转换方法：</p>
+     * <ul>
+     *   <li>.mp4 → 直接返回原路径（无需转换）</li>
+     *   <li>.webp → 调用 convertWebpToMp4（Python脚本方式）</li>
+     *   <li>.webm → 调用 convertWebmToMp4（FFmpeg copy方式）</li>
+     *   <li>其他格式 → 直接返回原路径</li>
+     * </ul>
+     * 
+     * <h3>处理流程：</h3>
+     * <pre>
+     * 1. 输入验证：检查文件路径、文件存在性
+     * 2. 类型判断：根据文件扩展名识别格式
+     * 3. 路由转换：调用对应的转换函数
+     * 4. 返回结果：返回转换后的MP4路径
+     * </pre>
+     * 
+     * @param filePath 输入文件路径（支持.mp4、.webp和.webm格式）
+     * @return 转换后的MP4文件路径
+     * @throws IllegalArgumentException 当文件路径为空时抛出
+     * @throws RuntimeException 当文件不存在或转换失败时抛出
+     */
+    public static String convertToMp4(String filePath) {
+        log.info("执行统一格式转换，输入路径: {}", filePath);
+
+        if (filePath == null || filePath.isEmpty()) {
+            log.error("文件路径为空");
+            throw new IllegalArgumentException("文件路径不能为空");
+        }
+
+        File file = new File(filePath);
+        if (!file.exists()) {
+            log.error("文件不存在: {}", filePath);
+            throw new RuntimeException("文件不存在: " + filePath);
+        }
+
+        String lowerPath = filePath.toLowerCase();
+
+        if (lowerPath.endsWith(".mp4")) {
+            log.info("检测到已是MP4格式，直接返回原路径");
+            return filePath;
+        } else if (lowerPath.endsWith(".webp")) {
+            log.info("检测到WebP格式，调用WebP转MP4转换");
+            return convertWebpToMp4(filePath);
+        } else if (lowerPath.endsWith(".webm")) {
+            log.info("检测到WebM格式，调用WebM转MP4转换");
+            return convertWebmToMp4(filePath);
+        } else {
+            log.warn("不支持的文件格式，直接返回原路径: {}", filePath);
+            return filePath;
+        }
+    }
+
+    /**
+     * 调整FLAC语音文件语速
+     * <p>使用FFmpeg的atempo滤镜调整FLAC音频文件的语速。</p>
+     * <p>命令格式: ffmpeg -i input.flac -filter:a "atempo=1.3" output.flac</p>
+     * 
+     * <h3>处理流程：</h3>
+     * <pre>
+     * 1. 输入验证：检查音频路径、文件存在性、FFmpeg可用性
+     * 2. 语速校验：确认语速参数在有效范围内（0.5~2.0）
+     * 3. 格式检查：验证输入文件是否为FLAC格式
+     * 4. 生成输出路径：在原文件名基础上添加_speed后缀
+     * 5. 执行转换：使用FFmpeg atempo滤镜调整语速
+     * 6. 结果验证：检查输出文件是否生成成功
+     * </pre>
+     * 
+     * <h3>关键技术说明：</h3>
+     * <ul>
+     *   <li>atempo滤镜：FFmpeg原生语速调整，保持音质不变</li>
+     *   <li>语速范围：支持0.5（慢速）到2.0（快速）</li>
+     *   <li>默认语速：1.3倍速，适合解说语音</li>
+     *   <li>超时控制：处理超时5分钟，防止长时间阻塞</li>
+     * </ul>
+     * 
+     * @param flacPath FLAC音频文件路径
+     * @param speed 语速倍率，默认1.3，范围0.5~2.0
+     * @return 调整语速后的FLAC音频文件路径
+     * @throws IllegalArgumentException 当路径为空、语速超出范围时抛出
+     * @throws RuntimeException 当文件不存在、FFmpeg不可用、处理超时或失败时抛出
+     */
+    public static String adjustFlacSpeed(String flacPath, double speed) {
+        log.info("执行FLAC语速调整，输入路径: {}, 语速: {}", flacPath, speed);
+
+        if (flacPath == null || flacPath.isEmpty()) {
+            log.error("音频路径为空");
+            throw new IllegalArgumentException("音频路径不能为空");
+        }
+
+        if (speed < 0.5 || speed > 2.0) {
+            log.error("语速超出有效范围: {}, 有效范围: 0.5~2.0", speed);
+            throw new IllegalArgumentException("语速必须在0.5~2.0范围内");
+        }
+
+        if (!isFfmpegAvailable()) {
+            throw new RuntimeException("FFmpeg 未安装或不可用");
+        }
+
+        File flacFile = new File(flacPath);
+        if (!flacFile.exists()) {
+            log.error("FLAC文件不存在: {}", flacPath);
+            throw new RuntimeException("FLAC文件不存在: " + flacPath);
+        }
+
+        if (!flacPath.toLowerCase().endsWith(".flac")) {
+            log.warn("输入文件格式不是 FLAC，可能影响处理: {}", flacPath);
+        }
+
+        String outputPath = flacPath.substring(0, flacPath.lastIndexOf('.')) + "_" + speed + ".flac";
+
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(
+                    "ffmpeg",
+                    "-i", flacPath,
+                    "-filter:a", "atempo=" + speed,
+                    "-y",
+                    outputPath
+            );
+
+            processBuilder.redirectErrorStream(true);
+            Process process = processBuilder.start();
+
+            StringBuilder output = new StringBuilder();
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+            }
+
+            boolean completed = process.waitFor(5, java.util.concurrent.TimeUnit.MINUTES);
+            if (!completed) {
+                log.error("FFmpeg处理超时，强制终止进程");
+                process.destroyForcibly();
+                throw new RuntimeException("FFmpeg处理超时");
+            }
+
+            int exitCode = process.exitValue();
+            if (exitCode != 0) {
+                log.error("FFmpeg执行失败，退出码: {}, 错误信息: {}", exitCode, output);
+                throw new RuntimeException("FFmpeg执行失败: " + output);
+            }
+
+            File outputFile = new File(outputPath);
+            if (!outputFile.exists()) {
+                log.error("调整语速后的FLAC文件不存在: {}", outputPath);
+                throw new RuntimeException("调整语速后的FLAC文件不存在: " + outputPath);
+            }
+
+            log.info("FLAC语速调整完成，输出路径: {}", outputPath);
+            return outputPath;
+
+        } catch (java.io.IOException e) {
+            log.error("执行FFmpeg命令失败: {}", e.getMessage(), e);
+            throw new RuntimeException("执行FFmpeg命令失败: " + e.getMessage(), e);
+        } catch (InterruptedException e) {
+            log.error("FFmpeg处理被中断");
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("FFmpeg处理被中断", e);
+        }
+    }
+
+    /**
+     * 调整FLAC语音文件语速（使用默认语速1.3倍速）
+     * 
+     * @param flacPath FLAC音频文件路径
+     * @return 调整语速后的FLAC音频文件路径
+     */
+    public static String adjustFlacSpeed(String flacPath) {
+        return adjustFlacSpeed(flacPath, 1.3);
+    }
+
 
     private static String generateOutputPath(String inputPath, String suffix) {
         Path path = Paths.get(inputPath);

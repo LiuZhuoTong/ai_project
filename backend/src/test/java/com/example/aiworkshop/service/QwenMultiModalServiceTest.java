@@ -74,4 +74,35 @@ public class QwenMultiModalServiceTest {
 
         log.info("========== testAnalyzeVideo 测试通过 ==========");
     }
+
+    /**
+     * 测试 generateImage 方法：使用Qwen-Image-2.0-Pro生成图片
+     */
+    @Test
+    public void testGenerateImage() {
+        log.info("========== 测试 QwenMultiModalService.generateImage ==========");
+
+        // 测试提示词
+        String prompt = "High-angle rear aerial view (camera positioned behind the stern looking forward towards the bow, stern at bottom near, bow at top far) of a structurally realistic Nimitz-class aircraft carrier sailing on deep blue ocean. Island superstructure MUST be on the right side of the image (starboard). The central catapult runways and angled landing area MUST be completely clear of aircraft. F/A-18 fighters and E-2 aircraft are parked ONLY on the deck edges and parking aprons (forward of island and port edge). Numerous deck crew in yellow, green, red vests are actively working with dynamic poses. STRICTLY NO people standing on the very front bow edge. STRICTLY NO people standing still. Background golden sunset and towering clouds. Clear image, natural white wake trailing from the stern (no glowing blue wake).";
+
+        log.info("提示词长度: {} 字符", prompt.length());
+
+        // 调用 generateImage 方法
+        String imagePath = qwenMultiModalService.generateImage(prompt, "1024x1024");
+
+        log.info("图片生成成功，文件路径: {}", imagePath);
+
+        // 验证结果
+        Assertions.assertNotNull(imagePath, "图片路径不应为空");
+        Assertions.assertFalse(imagePath.isEmpty(), "图片路径不应为空字符串");
+        Assertions.assertTrue(imagePath.contains("qwen_image_"), "图片路径应包含模型标识前缀");
+
+        // 验证文件是否存在
+        java.io.File imageFile = new java.io.File(imagePath);
+        Assertions.assertTrue(imageFile.exists(), "生成的图片文件应存在");
+        Assertions.assertTrue(imageFile.length() > 0, "生成的图片文件大小应大于0");
+
+        log.info("图片文件大小: {} bytes", imageFile.length());
+        log.info("========== testGenerateImage 测试通过 ==========");
+    }
 }

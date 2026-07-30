@@ -32,6 +32,7 @@ public class VideoGenerateTools {
 
     private final LlmService llmService;
     private final QwenMultiModalService qwenMultiModalService;
+    private final PromptPolishUtils promptPolishUtils;
 
     @Value("${prompt.template-dir:original_prompt_template}")
     private String templateDir;
@@ -205,10 +206,51 @@ public class VideoGenerateTools {
     }
 
     /**
+     * 解说词润色
+     *
+     * <p>调用DeepSeek对原始解说词进行润色改写，使其更适合制作科普视频。</p>
+     * <p>润色后的解说词内容更精彩、有干货，且每句话简短精炼，确保单个镜头解说时长不超过5秒。</p>
+     *
+     * @param narration 原始解说词
+     * @return 润色后的解说词，失败时返回原始解说词
+     */
+    public String polishNarration(String narration) {
+        log.info("执行解说词润色，原始解说词长度: {} 字符", narration != null ? narration.length() : 0);
+
+        if (narration == null || narration.trim().isEmpty()) {
+            return narration;
+        }
+
+        try {
+            String promptTemplate = readTemplate("0_narration_polish.txt");
+
+            String prompt = promptTemplate.replace("{original_text}", narration);
+
+            // 调用DeepSeek生成润色后的解说词
+            String polishedNarration = llmService.generate(prompt);
+
+            if (polishedNarration != null && !polishedNarration.trim().isEmpty()) {
+                polishedNarration = polishedNarration.trim();
+                log.info("解说词润色完成，润色后长度: {} 字符", polishedNarration.length());
+                log.info("原始解说词:\n{}", narration);
+                log.info("润色后解说词:\n{}", polishedNarration);
+                return polishedNarration;
+            } else {
+                log.warn("解说词润色返回空响应，使用原始解说词");
+                return narration;
+            }
+
+        } catch (Exception e) {
+            log.error("解说词润色失败，使用原始解说词: {}", e.getMessage(), e);
+            return narration;
+        }
+    }
+
+    /**
      * 场景设计
-     * 
+     *
      * <p>根据解说词内容设计视频场景，调用DeepSeek生成场景设计结果。</p>
-     * 
+     *
      * @param narration 解说词内容
      * @return 场景设计结果
      */
@@ -239,15 +281,13 @@ public class VideoGenerateTools {
     /**
      * 分镜设计
      * 
-     * <p>根据解说词和场景设计结果生成分镜脚本，调用DeepSeek生成分镜设计结果。</p>
+     * <p>根据场景设计结果生成分镜脚本，调用DeepSeek生成分镜设计结果。</p>
      * 
-     * @param narration 解说词内容
      * @param sceneResponse 场景设计结果
      * @return 分镜设计结果
      */
-    public StoryboardDesignResponse storyboardDesign(String narration, SceneDesignResponse sceneResponse) {
-        log.info("执行分镜设计，解说词长度: {} 字符，场景数: {}", 
-                narration != null ? narration.length() : 0, 
+    public StoryboardDesignResponse storyboardDesign(SceneDesignResponse sceneResponse) {
+        log.info("执行分镜设计，场景数: {}", 
                 sceneResponse != null && sceneResponse.getScenes() != null ? sceneResponse.getScenes().size() : 0);
 
         try {
@@ -255,8 +295,7 @@ public class VideoGenerateTools {
             
             String promptTemplate = readTemplate("2_storyboard_design.txt");
             
-            String prompt = promptTemplate.replace("{original_text}", narration)
-                                         .replace("{scene_json}", sceneJson);
+            String prompt = promptTemplate.replace("{scene_json}", sceneJson);
             
             // 调用LLM生成响应
             String jsonResponse = llmService.generateJson(prompt);
@@ -277,15 +316,13 @@ public class VideoGenerateTools {
     /**
      * 解说音频生成
      * 
-     * <p>根据解说词和分镜设计结果生成语音情感设计，调用DeepSeek生成音频描述。</p>
+     * <p>根据分镜设计结果生成语音情感设计，调用DeepSeek生成音频描述。</p>
      * 
-     * @param narration 解说词内容
      * @param storyboardResponse 分镜设计结果
      * @return 语音情感设计结果
      */
-    public NarrationAudioResponse narrationAudioDesign(String narration, StoryboardDesignResponse storyboardResponse) {
-        log.info("执行解说音频生成，解说词长度: {} 字符，分镜场景数: {}", 
-                narration != null ? narration.length() : 0, 
+    public NarrationAudioResponse narrationAudioDesign(StoryboardDesignResponse storyboardResponse) {
+        log.info("执行解说音频生成，分镜场景数: {}", 
                 storyboardResponse != null && storyboardResponse.getStoryboard() != null ? storyboardResponse.getStoryboard().size() : 0);
 
         try {
@@ -293,8 +330,7 @@ public class VideoGenerateTools {
             
             String promptTemplate = readTemplate("3_speech_emotion_design.txt");
             
-            String prompt = promptTemplate.replace("{original_text}", narration)
-                                         .replace("{storyboard_json}", storyboardJson);
+            String prompt = promptTemplate.replace("{storyboard_json}", storyboardJson);
             
             // 调用LLM生成响应
             String jsonResponse = llmService.generateJson(prompt);
@@ -315,16 +351,14 @@ public class VideoGenerateTools {
     /**
      * 关键帧图片提示词生成
      * 
-     * <p>根据解说词和镜头信息生成图片提示词，调用DeepSeek生成中英文提示词。</p>
+     * <p>根据镜头信息生成图片提示词，调用DeepSeek生成中英文提示词。</p>
      * 
-     * @param narration 解说词内容
      * @param sceneId 场景编号
      * @param shot 镜头信息
      * @return 图片提示词结果
      */
-    public KeyframeDesignResponse keyframeDesign(String narration, Integer sceneId, StoryboardDesignResponse.Shot shot) {
-        log.info("执行关键帧图片提示词生成，解说词长度: {} 字符，场景ID: {}, 镜头ID: {}", 
-                narration != null ? narration.length() : 0, 
+    public KeyframeDesignResponse keyframeDesign(Integer sceneId, StoryboardDesignResponse.Shot shot) {
+        log.info("执行关键帧图片提示词生成，场景ID: {}, 镜头ID: {}", 
                 sceneId,
                 shot != null ? shot.getShotId() : null);
 
@@ -333,8 +367,7 @@ public class VideoGenerateTools {
             
             String promptTemplate = readTemplate("4_image_design.txt");
             
-            String prompt = promptTemplate.replace("{original_text}", narration)
-                                         .replace("{single_shot_json}", shotJson);
+            String prompt = promptTemplate.replace("{single_shot_json}", shotJson);
             
             // 调用LLM生成响应
             String jsonResponse = llmService.generateJson(prompt);
@@ -403,34 +436,29 @@ public class VideoGenerateTools {
     /**
      * 视频提示词生成
      * 
-     * <p>调用Qwen多模态模型生成图生视频提示词。</p>
-     * 
-     * @param keyframeResponse 图片生成提示词
+     * <p>调用DeepSeek模型根据关键帧提示词和分镜信息生成图生视频提示词。</p>
+     *
      * @param sceneId 场景编号
      * @param shot 镜头信息
-     * @param imagePath 图片文件路径
+     * @param keyframeDesign 关键帧提示词（来自关键帧设计响应）
+     * @param customDuration 自定义视频时长
      * @return 视频提示词结果
      */
-    public VideoDesignResponse videoDesign(KeyframeDesignResponse keyframeResponse, Integer sceneId, 
-                                          StoryboardDesignResponse.Shot shot, String imagePath, Integer customDuration) {
+    public VideoDesignResponse videoDesign(Integer sceneId, StoryboardDesignResponse.Shot shot, String keyframeDesign, Integer customDuration) {
         int duration = customDuration != null ? customDuration : 5;
-        log.info("执行视频提示词生成，场景ID: {}, 时长: {} 秒，图片路径: {}", sceneId, duration, imagePath);
+        log.info("执行视频提示词生成，场景ID: {}, 时长: {} 秒", sceneId, duration);
 
         try {
-            String shotJson = JSON.toJSONString(shot);
-            
-            String imageChinesePrompt = keyframeResponse.getChinese();
-            String imageEnglishPrompt = keyframeResponse.getEnglish();
+            String visualDescription = shot.getVisualDescription();
             
             String promptTemplate = readTemplate("6_video_design.txt");
             
-            String prompt = promptTemplate.replace("{single_shot_json}", shotJson)
-                                         .replace("{image_chinese_prompt}", imageChinesePrompt)
-                                         .replace("{image_english_prompt}", imageEnglishPrompt)
+            String prompt = promptTemplate.replace("{keyframe_design}", keyframeDesign != null ? keyframeDesign : "")
+                                         .replace("{visual_description}", visualDescription != null ? visualDescription : "")
                                          .replace("{duration}", String.valueOf(duration));
             
-            // 调用Qwen多模态模型分析图片并生成视频提示词
-            String jsonResponse = qwenMultiModalService.analyzeImage(prompt, imagePath);
+            // 调用DeepSeek模型生成视频提示词
+            String jsonResponse = llmService.generate(prompt);
             
             log.info("视频提示词生成完成，响应长度: {} 字符", jsonResponse != null ? jsonResponse.length() : 0);
             
@@ -445,6 +473,47 @@ public class VideoGenerateTools {
         } catch (Exception e) {
             log.error("视频提示词生成失败：发生错误", e);
             throw new RuntimeException("视频提示词生成失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 文字生视频提示词生成
+     * 
+     * <p>调用DeepSeek模型根据分镜信息生成用于文生视频的提示词。</p>
+     * 
+     * @param sceneId 场景ID
+     * @param shot 分镜信息
+     * @param videoDuration 视频时长（秒）
+     * @return 视频设计响应
+     */
+    public VideoDesignResponse videoDesignByText(Integer sceneId, StoryboardDesignResponse.Shot shot, Integer videoDuration) {
+        int duration = videoDuration != null ? videoDuration : 5;
+        log.info("执行文字生视频提示词生成，场景ID: {}, 时长: {} 秒", sceneId, duration);
+
+        try {
+            String visualDescription = shot.getVisualDescription();
+            
+            String promptTemplate = readTemplate("8_video_design_by_text.txt");
+            
+            String prompt = promptTemplate.replace("{visual_description}", visualDescription)
+                                         .replace("{duration}", String.valueOf(duration));
+            
+            // 调用DeepSeek模型生成视频提示词
+            String jsonResponse = llmService.generate(prompt);
+            
+            log.info("文字生视频提示词生成完成，响应长度: {} 字符", jsonResponse != null ? jsonResponse.length() : 0);
+            
+            // 日志输出时添加sceneId_shotId前缀
+            String prefix = sceneId + "_" + shot.getShotId();
+            log.info("文字生视频设计结果[{}]:\n{}", prefix, jsonResponse);
+            
+            // 提取JSON数据并解析
+            String cleanJson = extractJson(jsonResponse);
+            return JSON.parseObject(cleanJson, VideoDesignResponse.class);
+            
+        } catch (Exception e) {
+            log.error("文字生视频提示词生成失败：发生错误", e);
+            throw new RuntimeException("文字生视频提示词生成失败: " + e.getMessage(), e);
         }
     }
 

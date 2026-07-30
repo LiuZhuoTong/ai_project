@@ -64,7 +64,7 @@
         "max_new_tokens": 2048,
         "top_p": 0.8,
         "top_k": 20,
-        "temperature": 1,
+        "temperature": 1.0,
         "repetition_penalty": 1.05,
         "attention": "auto",
         "unload_model_after_generate": false,

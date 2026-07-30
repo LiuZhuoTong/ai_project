@@ -57,3 +57,9 @@ qwen:
   retry:
     max: 5
     delay: 10000
+  # Qwen-Image-2.0-Pro文生图配置
+  image:
+    model: qwen-image-2.0-pro
+    size: 1024*1024
+    output-dir: /root/comfyui/storage-user/output/image
+    file-prefix: qwen_image_

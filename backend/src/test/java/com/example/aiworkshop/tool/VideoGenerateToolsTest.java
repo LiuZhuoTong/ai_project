@@ -26,7 +26,7 @@ import java.nio.file.Paths;
  *
  * <p>测试场景设计、分镜设计等方法。</p>
  */
-@SpringBootTest(classes = {VideoGenerateTools.class, LlmService.class, QwenMultiModalService.class})
+@SpringBootTest(classes = {VideoGenerateTools.class, LlmService.class, QwenMultiModalService.class, PromptPolishUtils.class})
 public class VideoGenerateToolsTest {
 
     private static final Logger log = LoggerFactory.getLogger(VideoGenerateToolsTest.class);
@@ -68,16 +68,11 @@ public class VideoGenerateToolsTest {
     }
 
     /**
-     * 测试 storyboardDesign 方法：从文件读取解说词和场景设计结果，执行分镜设计
+     * 测试 storyboardDesign 方法：从文件读取场景设计结果，执行分镜设计
      */
     @Test
     public void testStoryboardDesign() throws IOException {
         log.info("========== 测试 VideoGenerateTools.storyboardDesign ==========");
-
-        // 从测试资源文件读取解说词
-        String scriptPath = "src/test/resources/test_script.txt";
-        String narration = new String(Files.readAllBytes(Paths.get(scriptPath)), "UTF-8");
-        log.info("读取解说词完成，长度: {} 字符", narration.length());
 
         // 从测试资源文件读取场景设计JSON并转换为SceneDesignResponse对象
         String sceneJsonPath = "src/test/resources/scene_design_test.txt";
@@ -86,7 +81,7 @@ public class VideoGenerateToolsTest {
         log.info("读取场景设计完成，场景数: {}", sceneResponse.getScenes().size());
 
         // 调用 storyboardDesign 方法
-        StoryboardDesignResponse response = videoGenerateTools.storyboardDesign(narration, sceneResponse);
+        StoryboardDesignResponse response = videoGenerateTools.storyboardDesign(sceneResponse);
 
         // 验证返回结果不为空
         Assertions.assertNotNull(response, "响应不应为空");
@@ -111,16 +106,11 @@ public class VideoGenerateToolsTest {
     }
 
     /**
-     * 测试 narrationAudioDesign 方法：从文件读取解说词和分镜设计结果，执行语音情感设计
+     * 测试 narrationAudioDesign 方法：从文件读取分镜设计结果，执行语音情感设计
      */
     @Test
     public void testNarrationAudioDesign() throws IOException {
         log.info("========== 测试 VideoGenerateTools.narrationAudioDesign ==========");
-
-        // 从测试资源文件读取解说词
-        String scriptPath = "src/test/resources/test_script.txt";
-        String narration = new String(Files.readAllBytes(Paths.get(scriptPath)), "UTF-8");
-        log.info("读取解说词完成，长度: {} 字符", narration.length());
 
         // 从测试资源文件读取分镜设计JSON并转换为StoryboardDesignResponse对象
         String storyboardJsonPath = "src/test/resources/storyboard_design_test.txt";
@@ -129,7 +119,7 @@ public class VideoGenerateToolsTest {
         log.info("读取分镜设计完成，分镜数: {}", storyboardResponse.getStoryboard().size());
 
         // 调用 narrationAudioDesign 方法
-        NarrationAudioResponse response = videoGenerateTools.narrationAudioDesign(narration, storyboardResponse);
+        NarrationAudioResponse response = videoGenerateTools.narrationAudioDesign(storyboardResponse);
 
         // 验证返回结果不为空
         Assertions.assertNotNull(response, "响应不应为空");
@@ -150,16 +140,11 @@ public class VideoGenerateToolsTest {
     }
 
     /**
-     * 测试 keyframeDesign 方法：从文件读取解说词和分镜设计结果，执行关键帧设计
+     * 测试 keyframeDesign 方法：从文件读取分镜设计结果，执行关键帧设计
      */
     @Test
     public void testKeyframeDesign() throws IOException {
         log.info("========== 测试 VideoGenerateTools.keyframeDesign ==========");
-
-        // 从测试资源文件读取解说词
-        String scriptPath = "src/test/resources/test_script.txt";
-        String narration = new String(Files.readAllBytes(Paths.get(scriptPath)), "UTF-8");
-        log.info("读取解说词完成，长度: {} 字符", narration.length());
 
         // 从测试资源文件读取分镜设计JSON并转换为StoryboardDesignResponse对象
         String storyboardJsonPath = "src/test/resources/storyboard_design_test.txt";
@@ -174,7 +159,7 @@ public class VideoGenerateToolsTest {
         log.info("测试场景ID: {}, 测试镜头ID: {}", sceneId, firstShot.getShotId());
 
         // 调用 keyframeDesign 方法
-        KeyframeDesignResponse response = videoGenerateTools.keyframeDesign(narration, sceneId, firstShot);
+        KeyframeDesignResponse response = videoGenerateTools.keyframeDesign(sceneId, firstShot);
 
         // 验证返回结果不为空
         Assertions.assertNotNull(response, "响应不应为空");
@@ -285,12 +270,12 @@ public class VideoGenerateToolsTest {
         log.info("镜头类型: {}, 运镜方式: {}, 预估时长: {}秒", 
                 shot1.getShotType(), shot1.getCameraMovement(), shot1.getEstimatedDuration());
 
-        // 测试图片路径
-        String imagePath = "src/test/resources/aircraft_carrier.jpg";
-        log.info("测试图片路径: {}", imagePath);
+        // 测试关键帧提示词
+        String keyframeDesignPrompt = "A realistic photo of an aircraft carrier sailing on the ocean, with clear blue sky and white clouds, professional photography, high detail";
+        log.info("测试关键帧提示词: {}", keyframeDesignPrompt);
 
         // 调用 videoDesign 方法
-        VideoDesignResponse response = videoGenerateTools.videoDesign(keyframeResponse, sceneId, shot1, imagePath, 10);
+        VideoDesignResponse response = videoGenerateTools.videoDesign(sceneId, shot1, keyframeDesignPrompt, 10);
 
         // 验证返回结果不为空
         Assertions.assertNotNull(response, "响应不应为空");
@@ -308,6 +293,52 @@ public class VideoGenerateToolsTest {
         }
 
         log.info("========== testVideoDesign 测试通过 ==========");
+    }
+
+    /**
+     * 测试 videoDesignByText 方法：从文件读取分镜设计结果，执行文字生视频提示词生成
+     */
+    @Test
+    public void testVideoDesignByText() throws IOException {
+        log.info("========== 测试 VideoGenerateTools.videoDesignByText ==========");
+
+        // 从测试资源文件读取分镜设计JSON并转换为StoryboardDesignResponse对象
+        String storyboardJsonPath = "src/test/resources/storyboard_design_test.txt";
+        String storyboardJson = new String(Files.readAllBytes(Paths.get(storyboardJsonPath)), "UTF-8");
+        StoryboardDesignResponse storyboardResponse = JSON.parseObject(storyboardJson, StoryboardDesignResponse.class);
+        log.info("读取分镜设计完成，分镜数: {}", storyboardResponse.getStoryboard().size());
+
+        // 取场景1镜头1进行测试
+        StoryboardDesignResponse.StoryboardScene scene1 = storyboardResponse.getStoryboard().get(0);
+        Integer sceneId = scene1.getSceneId();
+        StoryboardDesignResponse.Shot shot1 = scene1.getShots().get(0);
+        log.info("测试场景ID: {}, 测试镜头ID: {}", sceneId, shot1.getShotId());
+        log.info("镜头类型: {}, 运镜方式: {}, 预估时长: {}秒", 
+                shot1.getShotType(), shot1.getCameraMovement(), shot1.getEstimatedDuration());
+
+        // 视频时长设置为10秒
+        Integer videoDuration = 10;
+        log.info("视频时长: {} 秒", videoDuration);
+
+        // 调用 videoDesignByText 方法
+        VideoDesignResponse response = videoGenerateTools.videoDesignByText(sceneId, shot1, videoDuration);
+
+        // 验证返回结果不为空
+        Assertions.assertNotNull(response, "响应不应为空");
+
+        // 验证中英文提示词不为空
+        Assertions.assertNotNull(response.getChinese(), "中文视频提示词不应为空");
+        Assertions.assertNotNull(response.getEnglish(), "英文视频提示词不应为空");
+
+        log.info("文字生视频提示词生成结果:");
+        log.info("中文视频提示词:\n{}", response.getChinese());
+        log.info("英文视频提示词:\n{}", response.getEnglish());
+        
+        if (response.getEstimatedDuration() != null) {
+            log.info("预估视频时长: {} 秒", response.getEstimatedDuration());
+        }
+
+        log.info("========== testVideoDesignByText 测试通过 ==========");
     }
 
     /**

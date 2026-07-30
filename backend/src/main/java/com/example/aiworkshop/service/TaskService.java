@@ -52,6 +52,7 @@ public class TaskService {
     private final QwenMultiModalService qwenMultiModalService;
     private final com.example.aiworkshop.tool.VideoGenerateTools videoGenerateTools;
     private final org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+    private final com.example.aiworkshop.tool.PromptPolishUtils promptPolishUtils;
     
     @Lazy
     @Autowired
@@ -248,7 +249,7 @@ public class TaskService {
         // 父任务在单独线程中编排，子任务提交到队列由工作线程处理
         if (task.getType() == TaskType.SCIENCE_VIDEO) {
             log.info("科普视频生成解说词:" + narration);
-            executeScienceVideoTaskAsync(task, narration);
+            executeScienceVideoTaskAsync(task, narration);   // 核心:图生视频
             return;
         }
 
@@ -544,7 +545,7 @@ public class TaskService {
             case TEXT_TO_IMAGE:
                 if (promptToUse != null) {
                     if (isPolish) {
-                        String polishedPrompt = polishPromptWithDeepSeek(promptToUse, "image");
+                        String polishedPrompt = promptPolishUtils.polishPromptWithDeepSeek(promptToUse, "image");
                         if (polishedPrompt != null && !polishedPrompt.isEmpty()) {
                             log.info("DeepSeek润色完成(image) - 原始: {}, 润色后: {}", promptToUse, polishedPrompt);
                             result = result.replace("write describe text here", polishedPrompt);
@@ -563,7 +564,7 @@ public class TaskService {
             case TEXT_TO_VIDEO:
                 if (promptToUse != null) {
                     if (isPolish) {
-                        String polishedPrompt = polishPromptWithDeepSeek(promptToUse, "video");
+                        String polishedPrompt = promptPolishUtils.polishPromptWithDeepSeek(promptToUse, "video");
                         if (polishedPrompt != null && !polishedPrompt.isEmpty()) {
                             log.info("DeepSeek润色完成(视频) - 原始: {}, 润色后: {}", promptToUse, polishedPrompt);
                             result = result.replace("write describe text here", polishedPrompt);
@@ -590,7 +591,7 @@ public class TaskService {
                 }
                 if (promptToUse != null) {
                     if (isPolish) {
-                        String polishedPrompt = polishPromptWithQwen(promptToUse, task.getFilePath(), "video");
+                        String polishedPrompt = promptPolishUtils.polishPromptWithQwen(promptToUse, task.getFilePath(), "video");
                         if (polishedPrompt != null && !polishedPrompt.isEmpty()) {
                             log.info("Qwen3.7-plus润色完成(image_to_video) - 原始: {}, 润色后: {}", promptToUse, polishedPrompt);
                             result = result.replace("write describe text here", polishedPrompt);
@@ -613,7 +614,7 @@ public class TaskService {
             case TEXT_TO_VIDEO_AUDIO:
                 if (promptToUse != null) {
                     if (isPolish) {
-                        String polishedPrompt = polishPromptWithDeepSeek(promptToUse, "video_audio");
+                        String polishedPrompt = promptPolishUtils.polishPromptWithDeepSeek(promptToUse, "video_audio");
                         if (polishedPrompt != null && !polishedPrompt.isEmpty()) {
                             log.info("DeepSeek润色完成(video_audio) - 原始: {}, 润色后: {}", promptToUse, polishedPrompt);
                             result = result.replace("write describe text here", polishedPrompt);
@@ -640,7 +641,7 @@ public class TaskService {
                 }
                 if (promptToUse != null) {
                     if (isPolish) {
-                        String polishedPrompt = polishPromptWithQwen(promptToUse, task.getFilePath(), "video_audio");
+                        String polishedPrompt = promptPolishUtils.polishPromptWithQwen(promptToUse, task.getFilePath(), "video_audio");
                         if (polishedPrompt != null && !polishedPrompt.isEmpty()) {
                             log.info("Qwen3.7-plus润色完成(image_to_video_audio) - 原始: {}, 润色后: {}", promptToUse, polishedPrompt);
                             result = result.replace("write describe text here", polishedPrompt);
@@ -689,7 +690,7 @@ public class TaskService {
                 }
                 if (promptToUse != null) {
                     if (isPolish) {
-                        String polishedPrompt = polishPromptWithQwen(promptToUse, task.getFilePath(), "face_consistency");
+                        String polishedPrompt = promptPolishUtils.polishPromptWithQwen(promptToUse, task.getFilePath(), "face_consistency");
                         if (polishedPrompt != null && !polishedPrompt.isEmpty()) {
                             log.info("Qwen3.7-plus润色完成(face_consistency) - 原始: {}, 润色后: {}", promptToUse, polishedPrompt);
                             result = result.replace("write describe text here", polishedPrompt);
@@ -730,176 +731,6 @@ public class TaskService {
         }
 
         return result;
-    }
-
-    /**
-     * 使用 LlmService 润色提示词（支持图片/视频）
-     * 
-     * <p>调用 LlmService 对用户输入的描述进行润色，生成更适合AI生成的提示词。</p>
-     * <p>润色过程对用户不可见，仅记录日志。</p>
-     * 
-     * @param originalPrompt 用户原始输入的描述
-     * @param mode 生成模式："image" 或 "video"
-     * @return 润色后的提示词，失败时返回 null
-     */
-    private String polishPromptWithDeepSeek(String originalPrompt, String mode) {
-        if (originalPrompt == null || originalPrompt.isEmpty()) {
-            return null;
-        }
-
-        log.debug("开始调用LlmService润色提示词，模式: {}", mode);
-
-        try {
-            String prompt = null;
-            if ("video".equals(mode)) {
-                // 针对 wan2.2 视频生成模型的润色提示词
-                prompt = String.format(
-                    "请将以下文字润色成适合AI视频生成的英文提示词，使用wan2.2模型。要求：\n" +
-                    "1. 保持原有的核心含义\n" +
-                    "2. 添加丰富的场景描述和动态元素\n" +
-                    "3. 描述镜头角度和运动方式\n" +
-                    "4. 视频要具有电影质感\n" +
-                    "5. 运动要平滑自然，符合物理规律\n" +
-                    "6. 如有物体运动，需符合惯性、重力等物理规律\n" +
-                    "7. 遮挡关系在运动过程中保持正确\n" +
-                    "8. 尤其要包括根据分镜的运镜方式和画面描述生成的运动提示词\n" +
-                    "输入文本：\n%s",
-                    originalPrompt
-                );
-            } else if ("video_audio".equals(mode)) {
-                // 针对 ltx-2 视频+音频生成模型的润色提示词
-                prompt = String.format(
-                    "请将以下文字润色成适合AI视频生成的英文提示词，使用ltx-2模型生成带音频的视频。要求：\n" +
-                    "1. 保持原有的核心含义\n" +
-                    "2. 添加丰富的场景描述和动态元素\n" +
-                    "3. 描述镜头角度和运动方式\n" +
-                    "4. 视频要具有电影质感\n" +
-                    "5. 考虑背景音乐和音效的氛围\n" +
-                    "6. 保持提示词适合音频视频同步生成\n" +
-                    "7. 运动要平滑自然，符合物理规律\n" +
-                    "8. 如有物体运动，需符合惯性、重力等物理规律\n" +
-                    "9. 遮挡关系在运动过程中保持正确\n" +
-                    "10. 尤其要包括根据分镜的运镜方式和画面描述生成的运动提示词\n" +
-                    "输入文本：\n%s",
-                    originalPrompt
-                );
-            } else if ("image".equals(mode)) {
-                // 针对图像生成模型的润色提示词
-                prompt = String.format(
-                    "请将以下文字润色成适合AI图像生成的英文提示词，保持原有的核心含义，添加丰富的细节描述（如场景、光影、风格、色彩、构图等）：\n%s",
-                    originalPrompt
-                );
-            } else {
-                // do nothing
-            }
-            // 调用deepseek生成提示词
-            if(StringUtils.isEmpty(prompt)){
-                return originalPrompt;
-            }else{
-                // 调用 LlmService 生成响应
-                String polishedText = llmService.generate(prompt);
-                if (polishedText != null && !polishedText.isEmpty()) {
-                    // 清理结果，去除多余空格和换行
-                    polishedText = polishedText.trim().replaceAll("\\s+", " ");
-                    log.info("LlmService润色成功({}) - 原始: '{}', 润色后: '{}'", mode, originalPrompt, polishedText);
-                    return polishedText;
-                } else {
-                    log.warn("LlmService返回空响应");
-                    return null;
-                }
-            }
-        } catch (Exception e) {
-            log.error("LlmService调用异常({}): {}", mode, e.getMessage(), e);
-            return null;
-        }
-    }
-
-    /**
-     * 使用 Qwen3.7-plus 多模态模型分析图片并润色提示词
-     * 
-     * <p>调用 QwenMultiModalService 分析图片内容，并结合用户描述生成适合AI生成的提示词。</p>
-     * <p>润色过程对用户不可见，仅记录日志。</p>
-     * 
-     * @param originalPrompt 用户原始输入的描述
-     * @param imagePath 图片文件路径
-     * @param mode 生成模式："image" 或 "video"
-     * @return 润色后的提示词，失败时返回 null
-     */
-    private String polishPromptWithQwen(String originalPrompt, String imagePath, String mode) {
-        if (originalPrompt == null || originalPrompt.isEmpty()) {
-            return null;
-        }
-
-        log.debug("开始调用Qwen3.7-plus多模态模型润色提示词，模式: {}, 图片路径: {}", mode, imagePath);
-
-        try {
-            // 构建分析提示词
-            String analyzePrompt = null;
-            if ("video".equals(mode)) {
-                analyzePrompt = String.format(
-                    "请分析这张图片，并结合以下描述生成适合AI视频生成的英文提示词（使用wan2.2模型）。要求：\n" +
-                    "1. 描述图片中的主要内容、场景、人物、物体\n" +
-                    "2. 添加丰富的动态元素和镜头运动描述\n" +
-                    "3. 视频要具有电影质感\n" +
-                    "4. 运动要平滑自然，符合物理规律\n" +
-                    "5. 如有物体运动，需符合惯性、重力等物理规律\n" +
-                    "6. 遮挡关系在运动过程中保持正确\n" +
-                    "7. 尤其要包括根据分镜的运镜方式和画面描述生成的运动提示词\n" +
-                    "8. 只返回英文提示词，不要任何解释说明、分析或其他文字\n" +
-                    "用户描述：%s",
-                    originalPrompt
-                );
-            } else if ("video_audio".equals(mode)) {
-                analyzePrompt = String.format(
-                    "请分析这张图片，并结合以下描述生成适合AI视频生成的英文提示词（使用ltx-2模型生成带音频的视频）。要求：\n" +
-                    "1. 描述图片中的主要内容、场景、人物、物体\n" +
-                    "2. 添加丰富的动态元素和镜头运动描述\n" +
-                    "3. 视频要具有电影质感\n" +
-                    "4. 考虑背景音乐和音效的氛围\n" +
-                    "5. 保持提示词适合音频视频同步生成\n" +
-                    "6. 运动要平滑自然，符合物理规律\n" +
-                    "7. 如有物体运动，需符合惯性、重力等物理规律\n" +
-                    "8. 遮挡关系在运动过程中保持正确\n" +
-                    "9. 尤其要包括根据分镜的运镜方式和画面描述生成的运动提示词\n" +
-                    "10. 只返回英文提示词，不要任何解释说明、分析或其他文字\n" +
-                    "用户描述：%s",
-                    originalPrompt
-                );
-            } else if ("face_consistency".equals(mode)) {
-                analyzePrompt = String.format(
-                    "请分析这张图片中的人物，并结合以下描述生成适合AI人物一致性迁移的英文提示词（使用flux模型）。要求：\n" +
-                    "1. 详细描述人物的面部特征（五官、表情、发型）\n" +
-                    "2. 描述人物的姿态和动作\n" +
-                    "3. 描述人物的着装和配饰\n" +
-                    "4. 保持人物特征的一致性\n" +
-                    "5. 添加场景描述和光影效果\n" +
-                    "6. 保持提示词适合高质量图像生成\n" +
-                    "7. 只返回英文提示词，不要任何解释说明、分析或其他文字\n" +
-                    "用户描述：%s",
-                    originalPrompt
-                );
-            } else {
-            }
-            // 调用Qwen大模型生成提示词
-            if(StringUtils.isEmpty(analyzePrompt)){
-                return originalPrompt;
-            }else{
-                // 调用 QwenMultiModalService 分析图片
-                String response = qwenMultiModalService.analyzeImage(analyzePrompt, imagePath);
-                if (response != null && !response.isEmpty()) {
-                    // 直接使用返回的文本内容
-                    String polishedText = response.trim().replaceAll("\\s+", " ");
-                    log.info("Qwen3.7-plus润色成功({}) - 原始: '{}', 润色后: '{}'", mode, originalPrompt, polishedText);
-                    return polishedText;
-                } else {
-                    log.warn("Qwen3.7-plus返回空响应");
-                    return null;
-                }
-            }
-        } catch (Exception e) {
-            log.error("Qwen3.7-plus调用异常({}): {}", mode, e.getMessage(), e);
-            return null;
-        }
     }
 
     private String submitToComfyUI(String workflowJson) throws IOException {
@@ -1174,6 +1005,11 @@ public class TaskService {
         log.info("父任务ID: {}, 用户ID: {}", fatherTaskId, userId);
 
         try {
+            // ========== 步骤0: 解说词润色 ==========
+            log.info("步骤0: 解说词润色");
+            narration = videoGenerateTools.polishNarration(narration);
+            log.info("解说词润色完成，润色后解说词长度: {} 字符", narration.length());
+
             // ========== 步骤1: 场景设计 ==========
             log.info("步骤1: 场景设计");
             com.example.aiworkshop.dto.response.SceneDesignResponse sceneResponse = videoGenerateTools.sceneDesign(narration);
@@ -1181,12 +1017,12 @@ public class TaskService {
 
             // ========== 步骤2: 分镜设计 ==========
             log.info("步骤2: 分镜设计");
-            com.example.aiworkshop.dto.response.StoryboardDesignResponse storyboardResponse = videoGenerateTools.storyboardDesign(narration, sceneResponse);
+            com.example.aiworkshop.dto.response.StoryboardDesignResponse storyboardResponse = videoGenerateTools.storyboardDesign(sceneResponse);
             log.info("分镜设计完成");
 
             // ========== 步骤3: 解说音频提示词生成 ==========
             log.info("步骤3: 解说音频提示词生成");
-            com.example.aiworkshop.dto.response.NarrationAudioResponse narrationAudioResponse = videoGenerateTools.narrationAudioDesign(narration, storyboardResponse);
+            com.example.aiworkshop.dto.response.NarrationAudioResponse narrationAudioResponse = videoGenerateTools.narrationAudioDesign(storyboardResponse);
             log.info("解说音频提示词生成完成");
 
             java.util.List<String> videoPaths = new java.util.ArrayList<>();
@@ -1210,12 +1046,6 @@ public class TaskService {
                             String audioPath = null;
                             Integer audioDuration = null;
                             com.example.aiworkshop.dto.response.KeyframeDesignResponse keyframeResponse = null;
-                            int retryCount = 0;
-                            final int maxRetry = 1;   // 当前只重试一次
-
-                            String bestImagePath = null;
-                            Integer bestScore = null;
-                            com.example.aiworkshop.dto.response.ImageQualityDetectionResponse bestQualityResponse = null;
 
                             // ========== 步骤5: 生成镜头对应的音频（提前到前面，以便获取音频时长） ==========
                             com.example.aiworkshop.dto.response.NarrationAudioResponse.NarrationItem narrationItem = 
@@ -1237,150 +1067,29 @@ public class TaskService {
                                 log.warn("未找到镜头对应的解说音频或音频内容为空，跳过音频生成: sceneId={}, shotId={}", scene.getSceneId(), shot.getShotId());
                             }
 
-                            // ========== 步骤6-8: 关键帧图片生成与质量检测 ==========
-                            if (quality) {
-                                // 需要质量检测，带重试逻辑
-                                while (retryCount < maxRetry) {
-                                    if (retryCount == 0) {
-                                        // 根据镜头信息首次生成关键帧图片提示词
-                                        log.info("步骤6: 分镜图片提示词生成");
-                                        keyframeResponse = videoGenerateTools.keyframeDesign(narration, scene.getSceneId(), shot);
-                                    } else {
-                                        log.info("步骤6: 使用改进建议更新提示词（重试第 {}/{} 次）", retryCount, maxRetry);
-                                    }
+                            // ========== 步骤6-7: 关键帧图片生成 ==========
+                            log.info("步骤6: 分镜图片提示词生成");
+                            keyframeResponse = videoGenerateTools.keyframeDesign(scene.getSceneId(), shot);
 
-                                    log.info("步骤7: 生成关键帧图片");
-                                    String currentImagePath = multimediaUtils.generateImage(keyframeResponse, userId, fatherTaskId);
-                                    log.info("关键帧图片生成成功: {}", currentImagePath);
+                            log.info("步骤7: 生成关键帧图片");
+                            imagePath = multimediaUtils.generateImage(keyframeResponse, userId, fatherTaskId);
+                            log.info("关键帧图片生成成功: {}", imagePath);
 
-                                    log.info("步骤8: 图片质量检测");
-                                    com.example.aiworkshop.dto.response.ImageQualityDetectionResponse imageQuality = videoGenerateTools.imageQualityDetection(keyframeResponse, currentImagePath);
-                                    
-                                    Integer currentScore = imageQuality.getTotalScore();
-                                    log.info("图片质量检测得分: {}", currentScore);
-
-                                    // 记录最佳结果
-                                    if (bestScore == null || (currentScore != null && currentScore > bestScore)) {
-                                        bestScore = currentScore;
-                                        bestImagePath = currentImagePath;
-                                        bestQualityResponse = imageQuality;
-                                    }
-                                    
-                                    // 质量检测通过，退出重试循环
-                                    if (imageQuality.getPass() != null && imageQuality.getPass()) {
-                                        log.info("图片质量检测通过");
-                                        imagePath = currentImagePath;
-                                        break;
-                                    } else {
-                                        log.warn("图片质量检测未通过，重试第 {}/{} 次", retryCount + 1, maxRetry);
-                                        // 使用改进建议更新提示词
-                                        if (imageQuality.getImprovementSuggestions() != null) {
-                                            com.example.aiworkshop.dto.response.KeyframeDesignResponse newKeyframeResponse = new com.example.aiworkshop.dto.response.KeyframeDesignResponse();
-                                            newKeyframeResponse.setChinese(imageQuality.getImprovementSuggestions().getChinese());
-                                            newKeyframeResponse.setEnglish(imageQuality.getImprovementSuggestions().getEnglish());
-                                            keyframeResponse = newKeyframeResponse;
-                                            log.info("已使用改进建议更新提示词");
-                                        }
-                                        
-                                        retryCount++;
-                                    }
-                                }
-
-                                // 达到最大重试次数，使用得分最高的图片
-                                if (retryCount >= maxRetry) {
-                                    log.warn("图片质量检测达到最大重试次数，使用得分最高的图片，得分: {}", bestScore);
-                                    imagePath = bestImagePath;
-                                    if (imagePath == null) {
-                                        throw new RuntimeException("图片生成失败，场景: " + scene.getSceneId() + ", 分镜: " + shot.getShotId());
-                                    }
-                                }
-                            } else {
-                                // 不需要质量检测，直接生成一次
-                                log.info("步骤6: 分镜图片提示词生成（跳过质量检测）");
-                                keyframeResponse = videoGenerateTools.keyframeDesign(narration, scene.getSceneId(), shot);
-
-                                log.info("步骤7: 生成关键帧图片（跳过质量检测）");
-                                imagePath = multimediaUtils.generateImage(keyframeResponse, userId, fatherTaskId);
-                                log.info("关键帧图片生成成功: {}", imagePath);
-                            }
-
-                            // ========== 步骤9-11: 视频生成与质量检测（使用音频时长） ==========
+                            // ========== 步骤9-10: 视频生成（使用音频时长） ==========
                             String videoWithAudioPath = null;
-                            retryCount = 0;
-
-                            String bestVideoPath = null;
-                            Integer bestVideoScore = null;
                             com.example.aiworkshop.dto.response.VideoDesignResponse videoDesignResponse = null;
 
                             // 确定视频生成时长：有音频时长则使用音频时长（加冗余），否则使用预估时长
                             Integer videoDuration = audioDuration != null ? audioDuration : 
                                                    (shot.getEstimatedDuration() != null ? shot.getEstimatedDuration() : 5);
 
-                            if (quality) {
-                                // 需要质量检测，带重试逻辑
-                                while (retryCount < maxRetry) {
-                                    if (retryCount == 0) {
-                                        // 根据关键帧提示词、镜头信息、图片信息首次生成视频生成提示词
-                                        log.info("步骤9: 视频提示词生成");
-                                        videoDesignResponse = videoGenerateTools.videoDesign(keyframeResponse, scene.getSceneId(), shot, imagePath, videoDuration);
-                                    } else {
-                                        log.info("步骤9: 使用改进建议更新提示词（重试第 {}/{} 次）", retryCount, maxRetry);
-                                    }
+                            log.info("步骤9: 视频提示词生成");
+                            String keyframeDesignPrompt = keyframeResponse != null ? keyframeResponse.getEnglish() : null;
+                            videoDesignResponse = videoGenerateTools.videoDesign(scene.getSceneId(), shot, keyframeDesignPrompt, videoDuration);
 
-                                    log.info("步骤10: 关键帧生成视频");
-                                    String currentVideoPath = multimediaUtils.generateVideoWithAudio(videoDesignResponse, imagePath, userId, fatherTaskId);
-                                    log.info("视频生成成功: {}", currentVideoPath);
-
-                                    log.info("步骤11: 视频质量检测");
-                                    com.example.aiworkshop.dto.response.VideoQualityDetectionResponse videoQuality = videoGenerateTools.videoQualityDetection(videoDesignResponse, currentVideoPath);
-
-                                    Integer currentScore = videoQuality.getTotalScore();
-                                    log.info("视频质量检测得分: {}", currentScore);
-
-                                    // 记录最佳结果
-                                    if (bestVideoScore == null || (currentScore != null && currentScore > bestVideoScore)) {
-                                        bestVideoScore = currentScore;
-                                        bestVideoPath = currentVideoPath;
-                                    }
-
-                                    // 质量检测通过，退出重试循环
-                                    if (videoQuality.getPass() != null && videoQuality.getPass()) {
-                                        log.info("视频质量检测通过");
-                                        videoWithAudioPath = currentVideoPath;
-                                        break;
-                                    } else {
-                                        log.warn("视频质量检测未通过，重试第 {}/{} 次", retryCount + 1, maxRetry);
-                                        // 使用改进建议更新提示词
-                                        if (videoQuality.getImprovementSuggestions() != null) {
-                                            com.example.aiworkshop.dto.response.VideoDesignResponse newVideoDesignResponse = new com.example.aiworkshop.dto.response.VideoDesignResponse();
-                                            newVideoDesignResponse.setChinese(videoQuality.getImprovementSuggestions().getChinese());
-                                            newVideoDesignResponse.setEnglish(videoQuality.getImprovementSuggestions().getEnglish());
-                                            newVideoDesignResponse.setEstimatedDuration(videoDuration);
-                                            videoDesignResponse = newVideoDesignResponse;
-                                            log.info("已使用视频改进建议更新提示词");
-                                        }
-
-                                        retryCount++;
-                                    }
-                                }
-
-                                // 达到最大重试次数，使用得分最高的视频
-                                if (retryCount >= maxRetry) {
-                                    log.warn("视频质量检测达到最大重试次数，使用得分最高的视频，得分: {}", bestVideoScore);
-                                    videoWithAudioPath = bestVideoPath;
-                                    if (videoWithAudioPath == null) {
-                                        throw new RuntimeException("视频生成失败，场景: " + scene.getSceneId() + ", 分镜: " + shot.getShotId());
-                                    }
-                                }
-                            } else {
-                                // 不需要质量检测，直接生成一次
-                                log.info("步骤9: 视频提示词生成（跳过质量检测）");
-                                videoDesignResponse = videoGenerateTools.videoDesign(keyframeResponse, scene.getSceneId(), shot, imagePath, videoDuration);
-
-                                log.info("步骤10: 关键帧生成视频（跳过质量检测）");
-                                videoWithAudioPath = multimediaUtils.generateVideoWithAudio(videoDesignResponse, imagePath, userId, fatherTaskId);
-                                log.info("视频生成成功: {}", videoWithAudioPath);
-                            }
+                            log.info("步骤10: 关键帧生成视频");
+                            videoWithAudioPath = multimediaUtils.generateVideoByImage(videoDesignResponse, imagePath, userId, fatherTaskId);
+                            log.info("视频生成成功: {}", videoWithAudioPath);
 
                             // ========== 步骤12: 视频背景音去除 ==========
                             log.info("步骤12: 视频背景音去除");
@@ -1466,6 +1175,7 @@ public class TaskService {
             log.info("========== 科普视频生成异步任务线程退出 ==========");
         }, "ScienceVideoExecutor-" + task.getTaskId()).start();
     }
+
 
     /**
      * 标准化播音员名称
