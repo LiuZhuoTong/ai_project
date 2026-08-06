@@ -423,7 +423,11 @@ public class MultimediaUtils {
      * @param fatherTaskId 父任务ID，记录该视频生成任务属于哪个解说视频生成任务
      * @return 生成的视频文件路径（MP4格式）
      */
-    public String generateVideoByImage(VideoDesignResponse videoDesignResponse, String imagePath, String userId, String fatherTaskId) {
+    public String
+
+
+
+    generateVideoByImage(VideoDesignResponse videoDesignResponse, String imagePath, String userId, String fatherTaskId) {
         log.info("开始生成视频，视频提示词: {}", videoDesignResponse != null ? videoDesignResponse.getEnglish() : null);
         log.info("用户ID: {}, 父任务ID: {}, 预估时长: {}秒", userId, fatherTaskId, videoDesignResponse != null ? videoDesignResponse.getEstimatedDuration() : null);
 
@@ -818,15 +822,29 @@ public class MultimediaUtils {
     }
 
     /**
-     * 音视频整合
-     *
-     * <p>将FLAC音频文件烧录到MP4视频中，使用-shortest以较短流为准。</p>
+     * 音视频整合（默认以较短流为准截断）
      *
      * @param videoPath MP4视频文件路径
      * @param audioPath FLAC音频文件路径
      * @return 合并后的视频文件路径
      */
     public static String mergeAudioVideo(String videoPath, String audioPath) {
+        return mergeAudioVideo(videoPath, audioPath, true);
+    }
+
+    /**
+     * 音视频整合
+     *
+     * <p>将FLAC音频文件烧录到MP4视频中。</p>
+     * <p>useShortest为true时使用-shortest以较短流为准（音频结束即截断视频）；</p>
+     * <p>useShortest为false时以视频长度为准，音频结束后视频继续（静音），用于结尾延时场景。</p>
+     *
+     * @param videoPath MP4视频文件路径
+     * @param audioPath FLAC音频文件路径
+     * @param useShortest 是否以较短流为准截断
+     * @return 合并后的视频文件路径
+     */
+    public static String mergeAudioVideo(String videoPath, String audioPath, boolean useShortest) {
         log.info("执行音视频整合，视频路径: {}, 音频路径: {}", videoPath, audioPath);
 
         if (videoPath == null || videoPath.isEmpty()) {
@@ -866,17 +884,21 @@ public class MultimediaUtils {
         String outputPath = generateOutputPath(videoPath, "_with_audio");
 
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder(
+            java.util.List<String> command = new java.util.ArrayList<>(java.util.Arrays.asList(
                     "ffmpeg",
                     "-i", videoPath,
                     "-i", audioPath,
                     "-c:v", "copy",
                     "-c:a", "aac",
-                    "-b:a", "192k",
-                    "-shortest",
-                    "-y",
-                    outputPath
-            );
+                    "-b:a", "192k"
+            ));
+            if (useShortest) {
+                command.add("-shortest");
+            }
+            command.add("-y");
+            command.add(outputPath);
+
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
 
             processBuilder.redirectErrorStream(true);
             Process process = processBuilder.start();

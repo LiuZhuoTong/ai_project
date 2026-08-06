@@ -997,7 +997,7 @@ public class TaskService {
      * 
      * @param task 科普视频生成任务实体
      */
-    private void executeScienceVideoTask(Task task, String narration, boolean quality) {
+    private void executeScienceVideoTask(Task task, String narration) {
         String fatherTaskId = task.getTaskId();
         String userId = task.getUserId();
 
@@ -1006,9 +1006,9 @@ public class TaskService {
 
         try {
             // ========== 步骤0: 解说词润色 ==========
-            log.info("步骤0: 解说词润色");
-            narration = videoGenerateTools.polishNarration(narration);
-            log.info("解说词润色完成，润色后解说词长度: {} 字符", narration.length());
+//            log.info("步骤0: 解说词润色");
+//            narration = videoGenerateTools.polishNarration(narration);
+//            log.info("解说词润色完成，润色后解说词长度: {} 字符", narration.length());
 
             // ========== 步骤1: 场景设计 ==========
             log.info("步骤1: 场景设计");
@@ -1025,100 +1025,176 @@ public class TaskService {
             com.example.aiworkshop.dto.response.NarrationAudioResponse narrationAudioResponse = videoGenerateTools.narrationAudioDesign(storyboardResponse);
             log.info("解说音频提示词生成完成");
 
-            java.util.List<String> videoPaths = new java.util.ArrayList<>();
-
-            // ========== 步骤4: 遍历场景和镜头 ==========
+            // 统计镜头总数，用于进度计算
+            int totalShots = 0;
             if (storyboardResponse != null && storyboardResponse.getStoryboard() != null) {
-                int totalScenes = storyboardResponse.getStoryboard().size();
-                int processedScenes = 0;
-
-                // 对每一个场景进行遍历
+                // 对场景进行遍历
                 for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.StoryboardScene scene : storyboardResponse.getStoryboard()) {
-                    processedScenes++;
-                    log.info("========== 处理场景 {}/{} ==========", processedScenes, totalScenes);
-
                     if (scene.getShots() != null) {
-                        // 对每一个镜头进行遍历
+                        totalShots += scene.getShots().size();
+                    }
+                }
+            }
+            log.info("镜头总数: {}", totalShots);
+
+            // key 统一格式: sceneId_shotId
+            // ========== 步骤4: 镜头遍历，一次性生成所有关键帧提示词，存入map ==========
+            log.info("步骤4: 镜头遍历，一次性生成所有关键帧提示词");
+            java.util.Map<String, com.example.aiworkshop.dto.response.KeyframeDesignResponse> keyframePromptMap = new java.util.LinkedHashMap<>();
+            if (storyboardResponse != null && storyboardResponse.getStoryboard() != null) {
+                // 场景遍历
+                for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.StoryboardScene scene : storyboardResponse.getStoryboard()) {
+                    if (scene.getShots() != null) {
+                        // 镜头遍历
                         for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.Shot shot : scene.getShots()) {
-                            log.info("处理分镜: sceneId={}, shotId={}", scene.getSceneId(), shot.getShotId());
-
-                            String imagePath = null;
-                            String audioPath = null;
-                            Integer audioDuration = null;
-                            com.example.aiworkshop.dto.response.KeyframeDesignResponse keyframeResponse = null;
-
-                            // ========== 步骤5: 生成镜头对应的音频（提前到前面，以便获取音频时长） ==========
-                            com.example.aiworkshop.dto.response.NarrationAudioResponse.NarrationItem narrationItem = 
-                                narrationAudioResponse != null ? narrationAudioResponse.findBySceneIdAndShotId(scene.getSceneId(), shot.getShotId()) : null;
-                            if (narrationItem != null && narrationItem.getText() != null && !narrationItem.getText().isEmpty()) {
-                                log.info("步骤5: 生成镜头对应的音频");
-                                audioPath = multimediaUtils.generateSpeech(narrationItem, userId, fatherTaskId);
-                                log.info("音频生成成功: {}", audioPath);
-                                
-                                // 获取音频时长，前后各加1秒冗余
-                                audioDuration = multimediaUtils.getAudioDuration(audioPath);
-                                if (audioDuration != null) {
-                                    audioDuration = audioDuration + 1; // 加1秒冗余
-                                    log.info("音频时长: {} 秒，视频生成时长: {} 秒", audioDuration - 1, audioDuration);
-                                } else {
-                                    log.warn("获取音频时长失败，使用预估时长");
-                                }
-                            } else {
-                                log.warn("未找到镜头对应的解说音频或音频内容为空，跳过音频生成: sceneId={}, shotId={}", scene.getSceneId(), shot.getShotId());
-                            }
-
-                            // ========== 步骤6-7: 关键帧图片生成 ==========
-                            log.info("步骤6: 分镜图片提示词生成");
-                            keyframeResponse = videoGenerateTools.keyframeDesign(scene.getSceneId(), shot);
-
-                            log.info("步骤7: 生成关键帧图片");
-                            imagePath = multimediaUtils.generateImage(keyframeResponse, userId, fatherTaskId);
-                            log.info("关键帧图片生成成功: {}", imagePath);
-
-                            // ========== 步骤9-10: 视频生成（使用音频时长） ==========
-                            String videoWithAudioPath = null;
-                            com.example.aiworkshop.dto.response.VideoDesignResponse videoDesignResponse = null;
-
-                            // 确定视频生成时长：有音频时长则使用音频时长（加冗余），否则使用预估时长
-                            Integer videoDuration = audioDuration != null ? audioDuration : 
-                                                   (shot.getEstimatedDuration() != null ? shot.getEstimatedDuration() : 5);
-
-                            log.info("步骤9: 视频提示词生成");
-                            String keyframeDesignPrompt = keyframeResponse != null ? keyframeResponse.getEnglish() : null;
-                            videoDesignResponse = videoGenerateTools.videoDesign(scene.getSceneId(), shot, keyframeDesignPrompt, videoDuration);
-
-                            log.info("步骤10: 关键帧生成视频");
-                            videoWithAudioPath = multimediaUtils.generateVideoByImage(videoDesignResponse, imagePath, userId, fatherTaskId);
-                            log.info("视频生成成功: {}", videoWithAudioPath);
-
-                            // ========== 步骤12: 视频背景音去除 ==========
-                            log.info("步骤12: 视频背景音去除");
-                            String videoWithoutAudioPath = multimediaUtils.removeAudio(videoWithAudioPath);
-                            log.info("视频背景音去除完成: {}", videoWithoutAudioPath);
-
-                            // ========== 步骤13: 音视频整合 ==========
-                            log.info("步骤13: 音视频整合");
-                            String mergedVideoPath;
-                            if (audioPath != null) {
-                                mergedVideoPath = multimediaUtils.mergeAudioVideo(videoWithoutAudioPath, audioPath);
-                            } else {
-                                // 如果没有音频，直接使用去除背景音后的视频
-                                log.info("无音频文件，直接使用去除背景音后的视频");
-                                mergedVideoPath = videoWithoutAudioPath;
-                            }
-                            log.info("音视频整合完成: {}", mergedVideoPath);
-
-                            // 将当前镜头的视频加入列表，用于后续拼接
-                            videoPaths.add(mergedVideoPath);
+                            String key = scene.getSceneId() + "_" + shot.getShotId();
+                            log.info("生成关键帧提示词: {}", key);
+                            com.example.aiworkshop.dto.response.KeyframeDesignResponse keyframeResponse = videoGenerateTools.keyframeDesign(scene.getSceneId(), shot);
+                            keyframePromptMap.put(key, keyframeResponse);
                         }
                     }
-
-                    // 更新进度（场景处理进度占90%，保留10%给后续步骤）
-                    int progress = (int) ((processedScenes * 90.0) / totalScenes);
-                    task.setProgress(progress);
-                    updateTask(task);
-                    log.info("场景处理进度: {}%", progress);
                 }
+            }
+            log.info("关键帧提示词生成完成，共 {} 个", keyframePromptMap.size());
+
+            // ========== 步骤5: 一次性完成所有音频生成，结果存入map（value为存储路径） ==========
+            // 音频需先于视频提示词生成，以便用真实音频时长+1秒作为视频时长
+            log.info("步骤5: 一次性完成所有音频生成");
+            java.util.Map<String, String> audioMap = new java.util.LinkedHashMap<>();
+            java.util.Map<String, Integer> audioDurationMap = new java.util.LinkedHashMap<>();
+            if (storyboardResponse != null && storyboardResponse.getStoryboard() != null) {
+                int processedAudio = 0;
+                // 场景遍历
+                for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.StoryboardScene scene : storyboardResponse.getStoryboard()) {
+                    if (scene.getShots() != null) {
+                        // 镜头遍历
+                        for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.Shot shot : scene.getShots()) {
+                            String key = scene.getSceneId() + "_" + shot.getShotId();
+                            log.info("生成音频: {}", key);
+                            com.example.aiworkshop.dto.response.NarrationAudioResponse.NarrationItem narrationItem =
+                                narrationAudioResponse != null ? narrationAudioResponse.findBySceneIdAndShotId(scene.getSceneId(), shot.getShotId()) : null;
+                            if (narrationItem != null && narrationItem.getText() != null && !narrationItem.getText().isEmpty()) {
+                                String audioPath = multimediaUtils.generateSpeech(narrationItem, userId, fatherTaskId);
+                                audioMap.put(key, audioPath);
+                                // 获取真实音频时长（音频生成后才能确定），用于后续视频时长计算
+                                Integer audioDuration = multimediaUtils.getAudioDuration(audioPath);
+                                audioDurationMap.put(key, audioDuration);
+                                log.info("音频生成成功: {}, 真实时长: {} 秒", audioPath, audioDuration);
+                            } else {
+                                log.warn("未找到镜头对应的解说音频或音频内容为空，跳过音频生成: {}", key);
+                            }
+                            processedAudio++;
+                            updateStageProgress(task, 15, 30, processedAudio, totalShots);
+                        }
+                    }
+                }
+            }
+            log.info("音频生成完成，共 {} 个", audioMap.size());
+
+            // ========== 步骤6: 镜头遍历，一次性生成所有视频提示词，存入map ==========
+            // 视频时长=真实音频时长+1秒冗余；最后一段视频额外+2秒延时，使台词结束后画面继续延续
+            log.info("步骤6: 镜头遍历，一次性生成所有视频提示词");
+            java.util.Map<String, com.example.aiworkshop.dto.response.VideoDesignResponse> videoPromptMap = new java.util.LinkedHashMap<>();
+            final int lastShotExtraDelay = 2; // 最后一段视频台词结束后的额外延时（秒）
+            if (storyboardResponse != null && storyboardResponse.getStoryboard() != null) {
+                int shotIndex = 0;
+                for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.StoryboardScene scene : storyboardResponse.getStoryboard()) {
+                    if (scene.getShots() != null) {
+                        for (com.example.aiworkshop.dto.response.StoryboardDesignResponse.Shot shot : scene.getShots()) {
+                            shotIndex++;
+                            String key = scene.getSceneId() + "_" + shot.getShotId();
+                            log.info("生成视频提示词: {}", key);
+                            com.example.aiworkshop.dto.response.KeyframeDesignResponse keyframeResponse = keyframePromptMap.get(key);
+                            String keyframeDesignPrompt = keyframeResponse != null ? keyframeResponse.getEnglish() : null;
+                            // 视频时长=真实音频时长+1秒冗余；无音频时使用分镜预估时长
+                            Integer audioDuration = audioDurationMap.get(key);
+                            int baseDuration = audioDuration != null ? audioDuration + 1
+                                    : (shot.getEstimatedDuration() != null ? shot.getEstimatedDuration() : 5);
+                            // 最后一段视频额外加结尾延时，台词结束后画面继续延续
+                            boolean isLastShot = (shotIndex == totalShots);
+                            int videoDuration = isLastShot ? baseDuration + lastShotExtraDelay : baseDuration;
+                            if (isLastShot) {
+                                log.info("视频时长: {} 秒（真实音频时长: {} 秒 + 1 秒冗余 + 2 秒结尾延时）", videoDuration, audioDuration);
+                            } else {
+                                log.info("视频时长: {} 秒（真实音频时长: {} 秒 + 1 秒冗余）", videoDuration, audioDuration);
+                            }
+                            com.example.aiworkshop.dto.response.VideoDesignResponse videoDesignResponse = videoGenerateTools.videoDesign(scene.getSceneId(), shot, keyframeDesignPrompt, videoDuration);
+                            videoDesignResponse.setEstimatedDuration(videoDuration);
+                            videoPromptMap.put(key, videoDesignResponse);
+                        }
+                    }
+                }
+            }
+            log.info("视频提示词生成完成，共 {} 个", videoPromptMap.size());
+
+            // ========== 步骤7: 遍历关键帧提示词map，一次性完成所有关键帧图片生成 ==========
+            log.info("步骤7: 一次性完成所有关键帧图片生成");
+            java.util.Map<String, String> imageMap = new java.util.LinkedHashMap<>();
+            int processedImage = 0;
+            for (java.util.Map.Entry<String, com.example.aiworkshop.dto.response.KeyframeDesignResponse> entry : keyframePromptMap.entrySet()) {
+                String key = entry.getKey();
+                log.info("生成关键帧图片: {}", key);
+                String imagePath = multimediaUtils.generateImage(entry.getValue(), userId, fatherTaskId);
+                imageMap.put(key, imagePath);
+                log.info("关键帧图片生成成功: {}", imagePath);
+                processedImage++;
+                updateStageProgress(task, 30, 55, processedImage, totalShots);
+            }
+            log.info("关键帧图片生成完成，共 {} 个", imageMap.size());
+
+            // ========== 步骤8: 遍历视频提示词map和关键帧map，一次性完成所有视频生成 ==========
+            // 视频时长已在步骤6基于真实音频时长+1秒写入estimatedDuration
+            log.info("步骤8: 一次性完成所有视频生成");
+            java.util.Map<String, String> videoMap = new java.util.LinkedHashMap<>();
+            int processedVideo = 0;
+            for (java.util.Map.Entry<String, com.example.aiworkshop.dto.response.VideoDesignResponse> entry : videoPromptMap.entrySet()) {
+                String key = entry.getKey();
+                log.info("生成视频: {}", key);
+                com.example.aiworkshop.dto.response.VideoDesignResponse videoDesignResponse = entry.getValue();
+                String imagePath = imageMap.get(key);
+                log.info("视频生成时长: {} 秒", videoDesignResponse.getEstimatedDuration());
+
+                String videoWithAudioPath = multimediaUtils.generateVideoByImage(videoDesignResponse, imagePath, userId, fatherTaskId);
+                videoMap.put(key, videoWithAudioPath);
+                log.info("视频生成成功: {}", videoWithAudioPath);
+                processedVideo++;
+                updateStageProgress(task, 55, 85, processedVideo, totalShots);
+            }
+            log.info("视频生成完成，共 {} 个", videoMap.size());
+
+            // ========== 步骤9-10: 视频背景音去除 + 音视频整合 ==========
+            log.info("步骤9-10: 视频背景音去除 + 音视频整合");
+            java.util.List<String> videoPaths = new java.util.ArrayList<>();
+            int processedMerge = 0;
+            for (java.util.Map.Entry<String, String> entry : videoMap.entrySet()) {
+                String key = entry.getKey();
+                String videoWithAudioPath = entry.getValue();
+
+                log.info("处理镜头 {}: 视频背景音去除", key);
+                String videoWithoutAudioPath = multimediaUtils.removeAudio(videoWithAudioPath);
+                log.info("视频背景音去除完成: {}", videoWithoutAudioPath);
+
+                log.info("处理镜头 {}: 音视频整合", key);
+                String audioPath = audioMap.get(key);
+                String mergedVideoPath;
+                if (audioPath != null) {
+                    // 最后一段视频不截断，保留结尾延时（音频结束后画面继续静音）；其余以较短流为准
+                    boolean isLastShot = (processedMerge + 1 == videoMap.size());
+                    if (isLastShot) {
+                        log.info("最后一段视频，保留结尾延时（不按音频截断）");
+                        mergedVideoPath = multimediaUtils.mergeAudioVideo(videoWithoutAudioPath, audioPath, false);
+                    } else {
+                        mergedVideoPath = multimediaUtils.mergeAudioVideo(videoWithoutAudioPath, audioPath);
+                    }
+                } else {
+                    // 如果没有音频，直接使用去除背景音后的视频
+                    log.info("无音频文件，直接使用去除背景音后的视频");
+                    mergedVideoPath = videoWithoutAudioPath;
+                }
+                log.info("音视频整合完成: {}", mergedVideoPath);
+                videoPaths.add(mergedVideoPath);
+                processedMerge++;
+                updateStageProgress(task, 85, 95, processedMerge, totalShots);
             }
 
             // 检查是否生成了视频片段
@@ -1126,12 +1202,12 @@ public class TaskService {
                 throw new RuntimeException("未生成任何视频片段，请检查分镜设计结果");
             }
 
-            // ========== 步骤14: 视频拼接 ==========
-            log.info("步骤14: 视频拼接");
+            // ========== 步骤11: 视频拼接 ==========
+            log.info("步骤11: 视频拼接");
             String finalVideoPath = multimediaUtils.concatVideos(videoPaths.toArray(new String[0]));
             log.info("视频拼接完成: {}", finalVideoPath);
 
-            // ========== 步骤15: 任务完成 ==========
+            // ========== 任务完成 ==========
             task.setStatus("执行成功");
             task.setProgress(100);
             task.setDownloadPath(finalVideoPath);
@@ -1151,6 +1227,27 @@ public class TaskService {
     }
 
     /**
+     * 分阶段更新任务进度
+     *
+     * <p>根据当前阶段已处理的镜头数与总镜头数，按比例计算并更新任务进度。</p>
+     *
+     * @param task 任务实体
+     * @param stageStart 该阶段起始进度百分比
+     * @param stageEnd 该阶段结束进度百分比
+     * @param processed 已处理镜头数
+     * @param total 镜头总数
+     */
+    private void updateStageProgress(Task task, int stageStart, int stageEnd, int processed, int total) {
+        if (total <= 0) {
+            return;
+        }
+        int progress = (int) (stageStart + (stageEnd - stageStart) * ((double) processed / total));
+        task.setProgress(progress);
+        updateTask(task);
+        log.info("阶段进度: {}%", progress);
+    }
+
+    /**
      * 异步执行科普视频生成任务
      * <p>将科普视频生成任务放到单独的线程中执行，避免占用ComfyUI工作线程。</p>
      * <p>这样工作线程可以立即返回，继续处理队列中的子任务（图片生成、视频生成等）。</p>
@@ -1163,7 +1260,7 @@ public class TaskService {
             log.info("父任务ID: {}, 异步线程: {}", task.getTaskId(), Thread.currentThread().getName());
             
             try {
-                executeScienceVideoTask(task, narration, false);
+                executeScienceVideoTask(task, narration);
             } catch (Exception e) {
                 log.error("科普视频生成异步任务执行异常: taskId={}", task.getTaskId(), e);
                 task.setStatus("执行失败");

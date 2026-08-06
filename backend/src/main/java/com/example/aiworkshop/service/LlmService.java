@@ -26,6 +26,9 @@ import java.nio.charset.StandardCharsets;
 @Slf4j
 public class LlmService {
 
+    private static final int MAX_LLM_RETRY = 5;
+    private static final long RETRY_INTERVAL_MS = 60000; // 1分钟
+
     @Value("${llm.api-key:sk-xxx}")
     private String apiKey;
 
@@ -64,7 +67,9 @@ public class LlmService {
     }
 
     /**
-     * 调用LLM模型获取响应（启用思考模式）
+     * 调用LLM模型获取响应（启用思考模式，带重试机制）
+     *
+     * <p>支持自动重试，最多重试5次，每次间隔1分钟。</p>
      *
      * @param prompt 提示词
      * @return LLM返回的响应字符串
@@ -73,15 +78,52 @@ public class LlmService {
         log.info("========== 调用LLM生成响应(思考模式) ==========");
         log.info("Prompt长度: {} 字符", prompt != null ? prompt.length() : 0);
 
-        try {
-            String response = callDeepSeek(prompt);
-            log.info("响应长度: {} 字符", response != null ? response.length() : 0);
-            log.info("响应内容: {}", response != null && response.length() > 500 ? response.substring(0, 500) + "..." : response);
-            return response;
-        } catch (Exception e) {
-            log.error("LLM调用失败", e);
-            throw new RuntimeException("LLM调用失败: " + e.getMessage(), e);
+        return executeWithRetry(() -> {
+            try {
+                String response = callDeepSeek(prompt);
+                log.info("响应长度: {} 字符", response != null ? response.length() : 0);
+                log.info("响应内容: {}", response != null && response.length() > 500 ? response.substring(0, 500) + "..." : response);
+                return response;
+            } catch (Exception e) {
+                throw new RuntimeException("LLM调用失败: " + e.getMessage(), e);
+            }
+        }, "LLM生成响应");
+    }
+
+    /**
+     * 带重试的执行器
+     *
+     * <p>最多重试5次，每次间隔1分钟。</p>
+     *
+     * @param supplier 执行器
+     * @param taskName 任务名称（用于日志）
+     * @return 执行结果
+     */
+    private String executeWithRetry(java.util.function.Supplier<String> supplier, String taskName) {
+        String lastErrorMsg = "未知错误";
+
+        for (int attempt = 1; attempt <= MAX_LLM_RETRY; attempt++) {
+            try {
+                log.info("{} 第{}/{}次尝试", taskName, attempt, MAX_LLM_RETRY);
+                return supplier.get();
+            } catch (Exception e) {
+                lastErrorMsg = e.getMessage();
+                log.error("{} 第{}次尝试失败: {}", taskName, attempt, e.getMessage());
+
+                if (attempt < MAX_LLM_RETRY) {
+                    try {
+                        log.info("等待{}秒后重试...", RETRY_INTERVAL_MS / 1000);
+                        Thread.sleep(RETRY_INTERVAL_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("重试等待被中断", ie);
+                    }
+                }
+            }
         }
+
+        log.error("{} 连续{}次失败", taskName, MAX_LLM_RETRY);
+        throw new RuntimeException(taskName + "失败，已重试" + MAX_LLM_RETRY + "次: " + lastErrorMsg);
     }
 
     /**

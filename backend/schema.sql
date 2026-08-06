@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     progress INT DEFAULT 0 COMMENT '任务完成进度（0-100）',
     download_path VARCHAR(500) COMMENT '生成文件下载路径',
     type VARCHAR(50) NOT NULL COMMENT '任务类型',
-    description VARCHAR(2000) COMMENT '用户输入的描述文字',
+    description VARCHAR(15000) COMMENT '用户输入的描述文字',
     file_path VARCHAR(500) COMMENT '用户上传文件的存储路径',
     submit_time DATETIME NOT NULL COMMENT '任务提交时间',
     complete_time DATETIME COMMENT '任务完成时间',
