@@ -423,11 +423,7 @@ public class MultimediaUtils {
      * @param fatherTaskId 父任务ID，记录该视频生成任务属于哪个解说视频生成任务
      * @return 生成的视频文件路径（MP4格式）
      */
-    public String
-
-
-
-    generateVideoByImage(VideoDesignResponse videoDesignResponse, String imagePath, String userId, String fatherTaskId) {
+    public String generateVideoByImage(VideoDesignResponse videoDesignResponse, String imagePath, String userId, String fatherTaskId) {
         log.info("开始生成视频，视频提示词: {}", videoDesignResponse != null ? videoDesignResponse.getEnglish() : null);
         log.info("用户ID: {}, 父任务ID: {}, 预估时长: {}秒", userId, fatherTaskId, videoDesignResponse != null ? videoDesignResponse.getEstimatedDuration() : null);
 
